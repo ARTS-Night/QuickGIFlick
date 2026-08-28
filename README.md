@@ -3,6 +3,8 @@
 > Select. Record. GIF.
 
 QuickGIFlick is a Windows GIF recorder built on [ScreenDelta](https://github.com/ARTS-Night/ScreenDelta).
+Its Cargo dependency is pinned to the validated ScreenDelta revision so a clean
+clone and the Windows CI job build the same capture API.
 
 ## Current milestone
 
