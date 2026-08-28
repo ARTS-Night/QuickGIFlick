@@ -24,12 +24,23 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let deadline = std::time::Instant::now() + Duration::from_secs(3);
 
     while std::time::Instant::now() < deadline {
-        append_sample(&mut frames, capture.try_next_frame(Duration::ZERO)?.map(|frame| frame.into_readback()).transpose()?);
+        append_sample(
+            &mut frames,
+            capture
+                .try_next_frame(Duration::ZERO)?
+                .map(|frame| frame.into_readback())
+                .transpose()?,
+        );
         pacer.wait();
     }
     let first = frames.first().ok_or("No frames captured")?;
     let mut file = File::create(&output)?;
-    let mut encoder = Encoder::new(&mut file, first.pixels.width as u16, first.pixels.height as u16, &[])?;
+    let mut encoder = Encoder::new(
+        &mut file,
+        first.pixels.width as u16,
+        first.pixels.height as u16,
+        &[],
+    )?;
     encoder.set_repeat(Repeat::Infinite)?;
     for RecordedFrame { pixels: cpu, delay } in frames {
         let mut rgba = cpu.data;
@@ -71,12 +82,21 @@ mod tests {
     use screendelta::{CpuFrame, PixelFormat};
 
     fn frame() -> CpuFrame {
-        CpuFrame { width: 1, height: 1, stride: 4, format: PixelFormat::Bgra8, data: vec![0; 4] }
+        CpuFrame {
+            width: 1,
+            height: 1,
+            stride: 4,
+            format: PixelFormat::Bgra8,
+            data: vec![0; 4],
+        }
     }
 
     #[test]
     fn unchanged_sample_extends_the_previous_gif_frame() {
-        let mut frames = vec![RecordedFrame { pixels: frame(), delay: 7 }];
+        let mut frames = vec![RecordedFrame {
+            pixels: frame(),
+            delay: 7,
+        }];
         append_sample(&mut frames, None);
         assert_eq!(frames.len(), 1);
         assert_eq!(frames[0].delay, 14);
