@@ -8,6 +8,19 @@ impl Canvas {
     pub fn new(frame: CpuFrame) -> Self {
         Self { frame }
     }
+
+    pub fn replace(&mut self, frame: CpuFrame) {
+        if self.frame.width == frame.width
+            && self.frame.height == frame.height
+            && self.frame.stride == frame.stride
+            && self.frame.format == frame.format
+        {
+            self.frame.data.copy_from_slice(&frame.data);
+        } else {
+            self.frame = frame;
+        }
+    }
+
     pub fn apply(&mut self, region: Region, pixels: &CpuFrame) -> Result<(), &'static str> {
         if pixels.width != region.size.width || pixels.height != region.size.height {
             return Err("delta size mismatch");
@@ -33,22 +46,34 @@ impl Canvas {
 mod tests {
     use super::*;
     use screendelta::PixelFormat;
-    fn f(w: u32, h: u32, v: u8) -> CpuFrame {
+
+    fn frame(width: u32, height: u32, value: u8) -> CpuFrame {
         CpuFrame {
-            width: w,
-            height: h,
-            stride: w as usize * 4,
+            width,
+            height,
+            stride: width as usize * 4,
             format: PixelFormat::Bgra8,
-            data: vec![v; (w * h * 4) as usize],
+            data: vec![value; (width * height * 4) as usize],
         }
     }
+
     #[test]
     fn applies_delta_without_reallocating_canvas() {
-        let mut c = Canvas::new(f(4, 4, 0));
-        let ptr = c.frame.data.as_ptr();
-        c.apply(Region::new(1, 1, 2, 2).unwrap(), &f(2, 2, 7))
+        let mut canvas = Canvas::new(frame(4, 4, 0));
+        let ptr = canvas.frame.data.as_ptr();
+        canvas
+            .apply(Region::new(1, 1, 2, 2).unwrap(), &frame(2, 2, 7))
             .unwrap();
-        assert_eq!(ptr, c.frame.data.as_ptr());
-        assert_eq!(c.frame.data[1 * c.frame.stride + 1 * 4], 7);
+        assert_eq!(ptr, canvas.frame.data.as_ptr());
+        assert_eq!(canvas.frame.data[canvas.frame.stride + 4], 7);
+    }
+
+    #[test]
+    fn replaces_same_canvas_without_reallocating() {
+        let mut canvas = Canvas::new(frame(2, 2, 0));
+        let ptr = canvas.frame.data.as_ptr();
+        canvas.replace(frame(2, 2, 5));
+        assert_eq!(ptr, canvas.frame.data.as_ptr());
+        assert_eq!(canvas.frame.data[0], 5);
     }
 }

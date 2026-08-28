@@ -1,11 +1,20 @@
+mod recording;
+mod timeline;
+
 use std::{
     fs::File,
     path::PathBuf,
-    time::{Duration, SystemTime, UNIX_EPOCH},
+    time::{Duration, Instant, SystemTime, UNIX_EPOCH},
 };
 
 use gif::{Encoder, Frame, Repeat};
-use screendelta::{CaptureConfig, CaptureSession, CaptureSource, FramePacer, monitors};
+use recording::Recording;
+use screendelta::{
+    CaptureConfig, CaptureSession, CaptureSource, CaptureUpdate, CpuFrame, FramePacer, monitors,
+};
+use timeline::Canvas;
+
+const DEFAULT_RECORDING_MEMORY_BYTES: usize = 32 * 1024 * 1024;
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     let monitor = monitors()?
@@ -15,14 +24,10 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let mut capture = CaptureSession::start(CaptureConfig {
         source: CaptureSource::Monitor(monitor.id),
     })?;
-    let output = output_path()?;
-    let mut frames = vec![RecordedFrame {
-        pixels: capture.next_frame()?.into_readback()?,
-        delay: 0,
-    }];
-    let recording_started = std::time::Instant::now();
-    let mut last_sample = recording_started;
-    let mut gif_clock = GifClock::default();
+    let initial = capture.next_frame()?;
+    let capture_origin = initial.timestamp();
+    let mut recording = Recording::new(initial.into_readback()?, recording_memory_budget())?;
+    let recording_started = Instant::now();
     let mut pacer = FramePacer::new(15)?;
     let seconds = std::env::var("QUICKGIFFLICK_SECONDS")
         .ok()
@@ -30,57 +35,94 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         .unwrap_or(3);
     let deadline = recording_started + Duration::from_secs(seconds);
 
-    while std::time::Instant::now() < deadline {
+    while Instant::now() < deadline {
         pacer.wait();
-        let now = std::time::Instant::now();
-        let delay = gif_clock.advance(now.duration_since(last_sample));
-        last_sample = now;
-        append_sample(
-            &mut frames,
-            capture
-                .try_next_frame(Duration::ZERO)?
-                .map(|frame| frame.into_readback())
-                .transpose()?,
-            delay,
-        );
-    }
-    let tail = gif_clock.advance(std::time::Instant::now().duration_since(last_sample));
-    if let Some(frame) = frames.last_mut() {
-        frame.delay = frame.delay.saturating_add(tail.max(1));
-    }
-    let stored_payload_bytes: usize = frames
-        .iter()
-        .map(|frame| frame.pixels.data.capacity())
-        .sum();
-    eprintln!(
-        "recording frames={} stored_payload_bytes={stored_payload_bytes}",
-        frames.len()
-    );
-    let first = frames.first().ok_or("No frames captured")?;
-    let mut file = File::create(&output)?;
-    let mut encoder = Encoder::new(
-        &mut file,
-        first.pixels.width as u16,
-        first.pixels.height as u16,
-        &[],
-    )?;
-    encoder.set_repeat(Repeat::Infinite)?;
-    for RecordedFrame { pixels: cpu, delay } in frames {
-        let mut rgba = cpu.data;
-        for pixel in rgba.as_chunks_mut::<4>().0 {
-            pixel.swap(0, 2);
+        match capture.try_next_update(Duration::ZERO)? {
+            CaptureUpdate::Full(frame) => {
+                let at = frame.timestamp().saturating_sub(capture_origin);
+                recording.append_full(at, frame.into_readback()?)?;
+            }
+            CaptureUpdate::Delta(update) => {
+                let at = update.timestamp.saturating_sub(capture_origin);
+                recording.append_delta(at, update.regions)?;
+            }
+            CaptureUpdate::Unchanged { timestamp, .. } => {
+                recording.observe_unchanged(timestamp.saturating_sub(capture_origin));
+            }
         }
-        let mut frame = Frame::from_rgba_speed(cpu.width as u16, cpu.height as u16, &mut rgba, 10);
-        frame.delay = delay;
-        encoder.write_frame(&frame)?;
     }
+    recording.finish(recording_started.elapsed());
+    eprintln!(
+        "recording updates={} resident_payload_bytes={} spilled_payload_bytes={} capture_stats={:?}",
+        recording.update_len(),
+        recording.resident_payload_bytes(),
+        recording.spilled_payload_bytes(),
+        capture.stats(),
+    );
+    let output = output_path()?;
+    encode_recording(&mut recording, &output)?;
     println!("Saved {}", output.display());
     Ok(())
 }
 
-struct RecordedFrame {
-    pixels: screendelta::CpuFrame,
+fn recording_memory_budget() -> usize {
+    std::env::var("QUICKGIFFLICK_RECORDING_MEMORY_MB")
+        .ok()
+        .and_then(|value| value.parse::<usize>().ok())
+        .map(|megabytes| megabytes.saturating_mul(1024 * 1024))
+        .unwrap_or(DEFAULT_RECORDING_MEMORY_BYTES)
+}
+
+fn encode_recording(
+    recording: &mut Recording,
+    output: &PathBuf,
+) -> Result<(), Box<dyn std::error::Error>> {
+    let mut canvas = Canvas::new(recording.initial()?);
+    let mut file = File::create(output)?;
+    let mut encoder = Encoder::new(
+        &mut file,
+        canvas.frame.width as u16,
+        canvas.frame.height as u16,
+        &[],
+    )?;
+    encoder.set_repeat(Repeat::Infinite)?;
+    let mut clock = GifClock::default();
+    let mut last = Duration::ZERO;
+    let mut gif_pixels = Vec::with_capacity(canvas.frame.data.len());
+    for index in 0..recording.update_len() {
+        let at = recording.update_time(index);
+        write_canvas(
+            &mut encoder,
+            &canvas.frame,
+            clock.advance(at.saturating_sub(last)),
+            &mut gif_pixels,
+        )?;
+        recording.apply_update(index, &mut canvas)?;
+        last = at;
+    }
+    write_canvas(
+        &mut encoder,
+        &canvas.frame,
+        clock.advance(recording.end().saturating_sub(last)).max(1),
+        &mut gif_pixels,
+    )?;
+    Ok(())
+}
+
+fn write_canvas(
+    encoder: &mut Encoder<&mut File>,
+    canvas: &CpuFrame,
     delay: u16,
+    rgba: &mut Vec<u8>,
+) -> Result<(), gif::EncodingError> {
+    rgba.clear();
+    rgba.extend_from_slice(&canvas.data);
+    for pixel in rgba.as_chunks_mut::<4>().0 {
+        pixel.swap(0, 2);
+    }
+    let mut frame = Frame::from_rgba_speed(canvas.width as u16, canvas.height as u16, rgba, 10);
+    frame.delay = delay;
+    encoder.write_frame(&frame)
 }
 
 #[derive(Default)]
@@ -96,21 +138,6 @@ impl GifClock {
     }
 }
 
-fn append_sample(
-    frames: &mut Vec<RecordedFrame>,
-    update: Option<screendelta::CpuFrame>,
-    delay: u16,
-) {
-    if let Some(pixels) = update {
-        if let Some(frame) = frames.last_mut() {
-            frame.delay = frame.delay.saturating_add(delay);
-        }
-        frames.push(RecordedFrame { pixels, delay: 0 });
-    } else if let Some(frame) = frames.last_mut() {
-        frame.delay = frame.delay.saturating_add(delay);
-    }
-}
-
 fn output_path() -> Result<PathBuf, Box<dyn std::error::Error>> {
     let dir = std::env::var_os("USERPROFILE").ok_or("USERPROFILE is not set")?;
     let dir = PathBuf::from(dir).join("Videos").join("QuickGIFlick");
@@ -122,28 +149,6 @@ fn output_path() -> Result<PathBuf, Box<dyn std::error::Error>> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use screendelta::{CpuFrame, PixelFormat};
-
-    fn frame() -> CpuFrame {
-        CpuFrame {
-            width: 1,
-            height: 1,
-            stride: 4,
-            format: PixelFormat::Bgra8,
-            data: vec![0; 4],
-        }
-    }
-
-    #[test]
-    fn unchanged_sample_extends_the_previous_gif_frame() {
-        let mut frames = vec![RecordedFrame {
-            pixels: frame(),
-            delay: 0,
-        }];
-        append_sample(&mut frames, None, 7);
-        assert_eq!(frames.len(), 1);
-        assert_eq!(frames[0].delay, 7);
-    }
 
     #[test]
     fn gif_clock_preserves_fractional_centiseconds() {
@@ -152,7 +157,3 @@ mod tests {
         assert_eq!(clock.advance(Duration::from_micros(66_667)), 7);
     }
 }
-#[cfg(test)]
-mod recording;
-#[cfg(test)]
-mod timeline;

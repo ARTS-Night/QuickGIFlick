@@ -2,17 +2,20 @@
 
 ## Observed path
 
-QuickGIFlick is in-process with ScreenDelta. It receives an owned `CpuFrame`
-through `into_readback`, keeps changed frames in `Vec<RecordedFrame>`, and only
-at Stop converts each owned BGRA vector in place to RGBA for `gif::Frame`.
+QuickGIFlick is in-process with ScreenDelta. It receives one initial Full
+canvas, then timestamped Full / Delta / Unchanged updates. A reusable canvas
+applies Delta pixels at their capture-local coordinates during GIF generation.
+Unchanged updates only advance the timeline end time.
 
 ```text
-CpuFrame ownership move -> Recording Vec -> in-place BGRA/RGBA swap
--> gif quantization/encoding
+Full/Delta ownership move -> bounded Recording payload store -> reusable Canvas
+-> reusable BGRA/RGBA output buffer -> gif quantization/encoding
 ```
 
-There is no channel, Canvas, resize, or CPU frame clone on this path. The
-recording vector is unbounded, which is the observed long-recording bottleneck.
+The store has a 32 MiB default resident-pixel budget. Payload that does not fit
+is appended to one temporary file and read back only for final reconstruction;
+metadata remains in memory. The temporary file is removed on normal `Recording`
+drop. There is deliberately no unbounded pixel queue.
 
 ## Measured baseline
 
@@ -25,10 +28,15 @@ capacity at Stop; the 10-second working set was 290,414,592 bytes. This confirms
 that recording-frame payload, rather than ScreenDelta's reusable staging
 texture or GIF output, is the dominant growth source.
 
-## Candidate transports
+## Adopted transport
 
-1. Current full CPU timeline: simple but memory grows with changed frames.
-2. Delta timeline: initial full state plus timestamped regions; candidate for
-   small motion, needs canvas-correctness experiment.
-3. Streaming encoder with bounded timeline: bounds memory, but must preserve
-   trim/review semantics; deferred until the timeline experiment.
+1. Initial Full CPU canvas, then dirty-region Delta payloads where ScreenDelta
+   selects them; large or uncertain updates remain Full.
+2. Timeline timestamps preserve actual capture time through Unchanged periods
+   and GIF centisecond remainder accumulation.
+3. Bounded resident storage with raw-payload spill preserves future trim/replay
+   capability without retaining a raw full-frame array in RAM.
+
+Final GIF encoding still writes full-canvas GIF frames. Partial-GIF encoding is
+not claimed here: correctness and browser compatibility have not yet been
+validated for it.
