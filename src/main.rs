@@ -24,7 +24,11 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let mut last_sample = recording_started;
     let mut gif_clock = GifClock::default();
     let mut pacer = FramePacer::new(15)?;
-    let deadline = recording_started + Duration::from_secs(3);
+    let seconds = std::env::var("QUICKGIFFLICK_SECONDS")
+        .ok()
+        .and_then(|value| value.parse().ok())
+        .unwrap_or(3);
+    let deadline = recording_started + Duration::from_secs(seconds);
 
     while std::time::Instant::now() < deadline {
         pacer.wait();
