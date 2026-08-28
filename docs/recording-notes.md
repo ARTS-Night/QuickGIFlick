@@ -8,3 +8,14 @@ avoids redundant GIF image data.
 The first frame still waits for a real desktop update, which is the current
 Desktop Duplication baseline limitation. Selection UI, cursor composition, and
 long-recording buffering remain future work.
+
+## Timing correction
+
+The output pacer starts only after the first real frame arrives. Starting it
+before that blocking operation caused catch-up sampling after an idle desktop,
+which could distort frame intervals. GIF delay is derived from monotonic elapsed
+time and carries fractional centiseconds forward, rather than using a fixed
+seven-centisecond delay for every sample.
+
+Windows MCP validation on 2026-08-28 moved the cursor once, then left the
+desktop static. The recorder exited normally and saved a 1,404,087-byte GIF.
