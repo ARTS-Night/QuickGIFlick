@@ -240,19 +240,19 @@ mod tests {
     use super::*;
     use screendelta::{PixelFormat, Region};
 
-    fn frame(width: u32, value: u8) -> CpuFrame {
+    fn frame(width: u32, height: u32, value: u8) -> CpuFrame {
         CpuFrame {
             width,
-            height: 1,
+            height,
             stride: width as usize * 4,
             format: PixelFormat::Bgra8,
-            data: vec![value; width as usize * 4],
+            data: vec![value; width as usize * height as usize * 4],
         }
     }
 
     #[test]
     fn unchanged_stores_only_time() {
-        let mut recording = Recording::new(frame(1, 0), 4).unwrap();
+        let mut recording = Recording::new(frame(1, 1, 0), 4).unwrap();
         recording.observe_unchanged(Duration::from_secs(1));
         assert_eq!(recording.update_len(), 0);
         assert_eq!(recording.end(), Duration::from_secs(1));
@@ -260,13 +260,13 @@ mod tests {
 
     #[test]
     fn spills_payload_and_reconstructs_delta() {
-        let mut recording = Recording::new(frame(2, 0), 8).unwrap();
+        let mut recording = Recording::new(frame(2, 1, 0), 8).unwrap();
         recording
             .append_delta(
                 Duration::from_millis(10),
                 vec![DeltaRegion {
                     region: Region::new(1, 0, 1, 1).unwrap(),
-                    pixels: frame(1, 7),
+                    pixels: frame(1, 1, 7),
                 }],
             )
             .unwrap();
@@ -275,5 +275,27 @@ mod tests {
         let mut canvas = crate::timeline::Canvas::new(recording.initial().unwrap());
         recording.apply_update(0, &mut canvas).unwrap();
         assert_eq!(canvas.frame.data[4], 7);
+    }
+
+    #[test]
+    fn replays_full_then_delta_in_timestamp_order() {
+        let mut recording = Recording::new(frame(2, 2, 0), 8).unwrap();
+        recording
+            .append_full(Duration::from_millis(10), frame(2, 2, 3))
+            .unwrap();
+        recording
+            .append_delta(
+                Duration::from_millis(20),
+                vec![DeltaRegion {
+                    region: Region::new(1, 1, 1, 1).unwrap(),
+                    pixels: frame(1, 1, 9),
+                }],
+            )
+            .unwrap();
+        let mut canvas = crate::timeline::Canvas::new(recording.initial().unwrap());
+        recording.apply_update(0, &mut canvas).unwrap();
+        recording.apply_update(1, &mut canvas).unwrap();
+        assert_eq!(canvas.frame.data[0], 3);
+        assert_eq!(canvas.frame.data[canvas.frame.stride + 4], 9);
     }
 }
