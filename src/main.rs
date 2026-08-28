@@ -152,3 +152,5 @@ mod tests {
         assert_eq!(clock.advance(Duration::from_micros(66_667)), 7);
     }
 }
+#[cfg(test)]
+mod timeline;
