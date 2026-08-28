@@ -1,0 +1,10 @@
+[package]
+name = "quickgiflick"
+version = "0.1.0"
+edition = "2024"
+license = "MIT"
+description = "A lightweight Windows GIF recorder powered by ScreenDelta."
+
+[dependencies]
+gif = "0.13.3"
+screendelta = { path = "../ScreenDelta" }
