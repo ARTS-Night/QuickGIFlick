@@ -153,4 +153,6 @@ mod tests {
     }
 }
 #[cfg(test)]
+mod recording;
+#[cfg(test)]
 mod timeline;
