@@ -16,26 +16,29 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         source: CaptureSource::Monitor(monitor.id),
     })?;
     let output = output_path()?;
-    let mut frames = Vec::new();
+    let mut frames = vec![(capture.next_frame()?.readback()?, 7_u16)];
     let mut pacer = FramePacer::new(15)?;
     let deadline = std::time::Instant::now() + Duration::from_secs(3);
 
     while std::time::Instant::now() < deadline {
-        let cpu = capture.next_frame()?.readback()?;
-        frames.push(cpu);
+        if let Some(frame) = capture.try_next_frame(Duration::ZERO)? {
+            frames.push((frame.readback()?, 7));
+        } else if let Some((_, delay)) = frames.last_mut() {
+            *delay = delay.saturating_add(7);
+        }
         pacer.wait();
     }
     let first = frames.first().ok_or("No frames captured")?;
     let mut file = File::create(&output)?;
-    let mut encoder = Encoder::new(&mut file, first.width as u16, first.height as u16, &[])?;
+    let mut encoder = Encoder::new(&mut file, first.0.width as u16, first.0.height as u16, &[])?;
     encoder.set_repeat(Repeat::Infinite)?;
-    for cpu in frames {
+    for (cpu, delay) in frames {
         let mut rgba = cpu.data;
         for pixel in rgba.as_chunks_mut::<4>().0 {
             pixel.swap(0, 2);
         }
         let mut frame = Frame::from_rgba_speed(cpu.width as u16, cpu.height as u16, &mut rgba, 10);
-        frame.delay = 7;
+        frame.delay = delay;
         encoder.write_frame(&frame)?;
     }
     println!("Saved {}", output.display());
