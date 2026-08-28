@@ -18,20 +18,31 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let output = output_path()?;
     let mut frames = vec![RecordedFrame {
         pixels: capture.next_frame()?.into_readback()?,
-        delay: 7,
+        delay: 0,
     }];
+    let recording_started = std::time::Instant::now();
+    let mut last_sample = recording_started;
+    let mut gif_clock = GifClock::default();
     let mut pacer = FramePacer::new(15)?;
-    let deadline = std::time::Instant::now() + Duration::from_secs(3);
+    let deadline = recording_started + Duration::from_secs(3);
 
     while std::time::Instant::now() < deadline {
+        pacer.wait();
+        let now = std::time::Instant::now();
+        let delay = gif_clock.advance(now.duration_since(last_sample));
+        last_sample = now;
         append_sample(
             &mut frames,
             capture
                 .try_next_frame(Duration::ZERO)?
                 .map(|frame| frame.into_readback())
                 .transpose()?,
+            delay,
         );
-        pacer.wait();
+    }
+    let tail = gif_clock.advance(std::time::Instant::now().duration_since(last_sample));
+    if let Some(frame) = frames.last_mut() {
+        frame.delay = frame.delay.saturating_add(tail.max(1));
     }
     let first = frames.first().ok_or("No frames captured")?;
     let mut file = File::create(&output)?;
@@ -60,11 +71,31 @@ struct RecordedFrame {
     delay: u16,
 }
 
-fn append_sample(frames: &mut Vec<RecordedFrame>, update: Option<screendelta::CpuFrame>) {
+#[derive(Default)]
+struct GifClock {
+    remainder_us: u128,
+}
+
+impl GifClock {
+    fn advance(&mut self, elapsed: Duration) -> u16 {
+        let total = self.remainder_us + elapsed.as_micros();
+        self.remainder_us = total % 10_000;
+        (total / 10_000).min(u16::MAX as u128) as u16
+    }
+}
+
+fn append_sample(
+    frames: &mut Vec<RecordedFrame>,
+    update: Option<screendelta::CpuFrame>,
+    delay: u16,
+) {
     if let Some(pixels) = update {
-        frames.push(RecordedFrame { pixels, delay: 7 });
+        if let Some(frame) = frames.last_mut() {
+            frame.delay = frame.delay.saturating_add(delay);
+        }
+        frames.push(RecordedFrame { pixels, delay: 0 });
     } else if let Some(frame) = frames.last_mut() {
-        frame.delay = frame.delay.saturating_add(7);
+        frame.delay = frame.delay.saturating_add(delay);
     }
 }
 
@@ -95,10 +126,17 @@ mod tests {
     fn unchanged_sample_extends_the_previous_gif_frame() {
         let mut frames = vec![RecordedFrame {
             pixels: frame(),
-            delay: 7,
+            delay: 0,
         }];
-        append_sample(&mut frames, None);
+        append_sample(&mut frames, None, 7);
         assert_eq!(frames.len(), 1);
-        assert_eq!(frames[0].delay, 14);
+        assert_eq!(frames[0].delay, 7);
+    }
+
+    #[test]
+    fn gif_clock_preserves_fractional_centiseconds() {
+        let mut clock = GifClock::default();
+        assert_eq!(clock.advance(Duration::from_micros(66_666)), 6);
+        assert_eq!(clock.advance(Duration::from_micros(66_667)), 7);
     }
 }
