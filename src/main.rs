@@ -48,6 +48,14 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     if let Some(frame) = frames.last_mut() {
         frame.delay = frame.delay.saturating_add(tail.max(1));
     }
+    let stored_payload_bytes: usize = frames
+        .iter()
+        .map(|frame| frame.pixels.data.capacity())
+        .sum();
+    eprintln!(
+        "recording frames={} stored_payload_bytes={stored_payload_bytes}",
+        frames.len()
+    );
     let first = frames.first().ok_or("No frames captured")?;
     let mut file = File::create(&output)?;
     let mut encoder = Encoder::new(

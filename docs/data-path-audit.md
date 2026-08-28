@@ -20,6 +20,11 @@ Windows MCP 30-second recording, 1366 x 768 desktop: peak working set at ten
 seconds was 349,179,904 bytes; resulting GIF was 17,192,497 bytes. This is the
 baseline for comparing a timeline/streaming transport.
 
+A repeat run measured 94 stored full frames with 394,457,088 bytes of payload
+capacity at Stop; the 10-second working set was 290,414,592 bytes. This confirms
+that recording-frame payload, rather than ScreenDelta's reusable staging
+texture or GIF output, is the dominant growth source.
+
 ## Candidate transports
 
 1. Current full CPU timeline: simple but memory grows with changed frames.
