@@ -6,6 +6,7 @@ mod windows_ui;
 use std::{
     fs::File,
     path::PathBuf,
+    sync::atomic::{AtomicBool, Ordering},
     time::{Duration, Instant},
 };
 
@@ -37,6 +38,15 @@ fn default_source() -> Result<CaptureSource, Box<dyn std::error::Error>> {
 }
 
 pub(crate) fn run_recording(source: CaptureSource) -> Result<PathBuf, Box<dyn std::error::Error>> {
+    run_recording_until(source, None)
+}
+
+/// Stops capture promptly when the UI sets `stop`, while preserving the actual
+/// elapsed timestamp as the recording end time.
+pub(crate) fn run_recording_until(
+    source: CaptureSource,
+    stop: Option<&AtomicBool>,
+) -> Result<PathBuf, Box<dyn std::error::Error>> {
     let mut capture = CaptureSession::start(CaptureConfig { source })?;
     let initial = capture.next_frame()?;
     let capture_origin = initial.timestamp();
@@ -49,7 +59,7 @@ pub(crate) fn run_recording(source: CaptureSource) -> Result<PathBuf, Box<dyn st
         .unwrap_or(3);
     let deadline = recording_started + Duration::from_secs(seconds);
 
-    while Instant::now() < deadline {
+    while Instant::now() < deadline && !stop.is_some_and(|flag| flag.load(Ordering::Relaxed)) {
         pacer.wait();
         match capture.try_next_update(Duration::ZERO)? {
             CaptureUpdate::Full(frame) => {

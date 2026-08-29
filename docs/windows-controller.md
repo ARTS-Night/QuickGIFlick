@@ -26,8 +26,17 @@ The saved GIF was decoded by the repository's `inspect_gif` example:
 | --- | ---: | ---: | ---: |
 | 300×200 | 3 seconds | 5 | 3.00 seconds |
 
-This verifies global-hotkey dispatch, overlay input, region capture, GIF
-creation, and GIF timing on an interactive Windows desktop. It does not claim
+The controller now starts capture on a worker thread, leaving the Windows
+message loop active. A topmost `● REC` HUD exposes Stop by click or by the same
+`Win + Shift + G` hotkey, and requests `WDA_EXCLUDEFROMCAPTURE` best-effort.
+In a second Windows MCP run, hotkey Stop produced a decoded GIF of 5 frames and
+0.53 seconds, proving that the recorded end timestamp follows stop rather than
+the three-second development cap. The exclusion flag means screenshot-driven
+automation cannot be used to prove the HUD click hit-test; the hotkey is the
+verified stop path.
+
+This verifies global-hotkey dispatch, overlay input, non-blocking region capture,
+Stop timing, GIF creation, and GIF timing on an interactive Windows desktop. It does not claim
 multi-monitor, review/trim, tray, clipboard, HUD exclusion, or browser
 compatibility coverage; those require their own completed implementations and
 tests.

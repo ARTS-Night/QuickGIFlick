@@ -10,7 +10,8 @@ clone and the Windows CI job build the same capture API.
 
 The native Windows controller registers `Win + Shift + G`. It opens a virtual
 desktop selection overlay, accepts a selected region, and asks for explicit
-Record or Cancel confirmation. Recording uses ScreenDelta `Full` / `Delta` /
+Record or Cancel confirmation. Recording runs on a worker and can be stopped
+with `Win + Shift + G` (or the recording HUD). It uses ScreenDelta `Full` / `Delta` /
 `Unchanged` updates and writes an animated GIF to
 `%USERPROFILE%\\Videos\\QuickGIFlick\\QuickGIFlick_YYYY-MM-DD_HH-MM-SS.gif`.
 The current ScreenDelta backend intentionally reports an error rather than
