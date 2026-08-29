@@ -7,8 +7,9 @@ avoids redundant GIF image data.
 
 The first frame still waits for a real desktop update, which is the current
 Desktop Duplication baseline limitation. The native selection UI and bounded
-spill-backed long-recording buffer are implemented; cursor composition remains
-future work.
+spill-backed long-recording buffer are implemented. ScreenDelta now supports
+Original, Standard, and Hidden cursor transport; Monochrome and Masked Color
+DXGI shapes remain outside the current implementation.
 
 ## Timing correction
 
