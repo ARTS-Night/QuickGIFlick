@@ -51,8 +51,8 @@ use windows::{
                 SetForegroundWindow, SetLayeredWindowAttributes, SetTimer,
                 SetWindowDisplayAffinity, ShowWindow, TrackPopupMenu, TranslateMessage,
                 WDA_EXCLUDEFROMCAPTURE, WINDOW_STYLE, WM_APP, WM_CLOSE, WM_COMMAND, WM_CONTEXTMENU,
-                WM_DESTROY, WM_HOTKEY, WM_LBUTTONDOWN, WM_LBUTTONUP, WM_MOUSEMOVE, WM_PAINT,
-                WM_RBUTTONUP, WM_TIMER, WNDCLASSW, WS_BORDER, WS_CAPTION, WS_CHILD,
+                WM_DESTROY, WM_HOTKEY, WM_KEYDOWN, WM_LBUTTONDOWN, WM_LBUTTONUP, WM_MOUSEMOVE,
+                WM_PAINT, WM_RBUTTONUP, WM_TIMER, WNDCLASSW, WS_BORDER, WS_CAPTION, WS_CHILD,
                 WS_EX_DLGMODALFRAME, WS_EX_LAYERED, WS_EX_TOOLWINDOW, WS_EX_TOPMOST, WS_POPUP,
                 WS_SYSMENU, WS_VISIBLE,
             },
@@ -87,6 +87,7 @@ struct OverlayState {
     origin: POINT,
     start: Option<POINT>,
     current: POINT,
+    aspect: Option<(i32, i32)>,
 }
 
 struct ActiveRecording {
@@ -611,6 +612,7 @@ fn select_region() -> Result<Option<Region>, Box<dyn Error>> {
             origin: POINT { x, y },
             start: None,
             current: POINT::default(),
+            aspect: None,
         });
         let hwnd = CreateWindowExW(
             WS_EX_TOPMOST | WS_EX_TOOLWINDOW | WS_EX_LAYERED,
@@ -727,7 +729,7 @@ fn wide(value: &str) -> Vec<u16> {
 unsafe extern "system" fn overlay_proc(
     hwnd: HWND,
     message: u32,
-    _wparam: WPARAM,
+    wparam: WPARAM,
     lparam: LPARAM,
 ) -> LRESULT {
     match message {
@@ -741,8 +743,8 @@ unsafe extern "system" fn overlay_proc(
         }
         WM_MOUSEMOVE => {
             let state = unsafe { state(hwnd) };
-            if state.start.is_some() {
-                state.current = point_from_lparam(lparam);
+            if let Some(start) = state.start {
+                state.current = constrain_point(start, point_from_lparam(lparam), state.aspect);
                 unsafe { update_overlay_cutout(hwnd, state) };
                 let _ = unsafe { InvalidateRect(Some(hwnd), None, true) };
             }
@@ -751,7 +753,7 @@ unsafe extern "system" fn overlay_proc(
         WM_LBUTTONUP => {
             let state = unsafe { state(hwnd) };
             if let Some(start) = state.start {
-                let end = point_from_lparam(lparam);
+                let end = constrain_point(start, point_from_lparam(lparam), state.aspect);
                 let left = start.x.min(end.x) + state.origin.x;
                 let top = start.y.min(end.y) + state.origin.y;
                 let width = (start.x - end.x).unsigned_abs();
@@ -765,6 +767,25 @@ unsafe extern "system" fn overlay_proc(
             }
             let _ = unsafe { ReleaseCapture() };
             let _ = unsafe { DestroyWindow(hwnd) };
+            LRESULT(0)
+        }
+        WM_KEYDOWN => {
+            let aspect = match wparam.0 as u32 {
+                0x46 => None,           // F: free
+                0x31 => Some((1, 1)),   // 1: 1:1
+                0x34 => Some((4, 3)),   // 4: 4:3
+                0x39 => Some((16, 9)),  // 9: 16:9
+                0x30 => Some((16, 10)), // 0: 16:10
+                0x56 => Some((9, 16)),  // V: 9:16
+                _ => return unsafe { DefWindowProcW(hwnd, message, wparam, lparam) },
+            };
+            let state = unsafe { state(hwnd) };
+            state.aspect = aspect;
+            if let Some(start) = state.start {
+                state.current = constrain_point(start, state.current, state.aspect);
+                unsafe { update_overlay_cutout(hwnd, state) };
+                let _ = unsafe { InvalidateRect(Some(hwnd), None, true) };
+            }
             LRESULT(0)
         }
         WM_PAINT => {
@@ -794,7 +815,7 @@ unsafe extern "system" fn overlay_proc(
             }
             LRESULT(0)
         }
-        _ => unsafe { DefWindowProcW(hwnd, message, _wparam, lparam) },
+        _ => unsafe { DefWindowProcW(hwnd, message, wparam, lparam) },
     }
 }
 
@@ -877,6 +898,35 @@ fn point_from_lparam(value: LPARAM) -> POINT {
     }
 }
 
+fn constrain_point(start: POINT, raw: POINT, aspect: Option<(i32, i32)>) -> POINT {
+    let Some((aspect_width, aspect_height)) = aspect else {
+        return raw;
+    };
+    let dx = i64::from(raw.x) - i64::from(start.x);
+    let dy = i64::from(raw.y) - i64::from(start.y);
+    let sign_x = if dx < 0 { -1 } else { 1 };
+    let sign_y = if dy < 0 { -1 } else { 1 };
+    let width = dx.unsigned_abs() as i64;
+    let height = dy.unsigned_abs() as i64;
+    let (width, height) = if width * i64::from(aspect_height) >= height * i64::from(aspect_width) {
+        (
+            width,
+            width * i64::from(aspect_height) / i64::from(aspect_width),
+        )
+    } else {
+        (
+            height * i64::from(aspect_width) / i64::from(aspect_height),
+            height,
+        )
+    };
+    POINT {
+        x: (i64::from(start.x) + sign_x * width).clamp(i64::from(i32::MIN), i64::from(i32::MAX))
+            as i32,
+        y: (i64::from(start.y) + sign_y * height).clamp(i64::from(i32::MIN), i64::from(i32::MAX))
+            as i32,
+    }
+}
+
 fn show_text(text: &str, flags: windows::Win32::UI::WindowsAndMessaging::MESSAGEBOX_STYLE) {
     let wide: Vec<u16> = text.encode_utf16().chain(Some(0)).collect();
     unsafe {
@@ -902,5 +952,25 @@ fn show_choice(
             PCWSTR(wide_title.as_ptr()),
             MB_YESNOCANCEL,
         )
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn constrains_selection_to_requested_aspect_or_leaves_it_free() {
+        let start = POINT { x: 10, y: 10 };
+        let raw = POINT { x: 210, y: 100 };
+        assert_eq!(constrain_point(start, raw, None), raw);
+        assert_eq!(
+            constrain_point(start, raw, Some((1, 1))),
+            POINT { x: 210, y: 210 }
+        );
+        assert_eq!(
+            constrain_point(start, raw, Some((16, 9))),
+            POINT { x: 210, y: 122 }
+        );
     }
 }

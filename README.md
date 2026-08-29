@@ -18,6 +18,9 @@ quality and writes `%USERPROFILE%\\Videos\\QuickGIFlick\\QuickGIFlick_YYYY-MM-DD
 Before quality selection, Review provides Start and End fields in seconds,
 plus Full range and Cancel. The encoder reconstructs the canvas at the chosen
 start timestamp.
+While the selection overlay has focus, press `F` for Free, `1` for 1:1, `4`
+for 4:3, `9` for 16:9, `0` for 16:10, or `V` for 9:16; the selected rectangle
+is constrained while dragging.
 The current ScreenDelta backend intentionally reports an error rather than
 capturing an invalid region when a selection crosses monitor boundaries.
 
