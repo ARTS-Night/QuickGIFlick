@@ -39,13 +39,14 @@ use windows::{
             WindowsAndMessaging::{
                 CS_HREDRAW, CS_VREDRAW, CreateWindowExW, DefWindowProcW, DestroyWindow,
                 DispatchMessageW, GWLP_USERDATA, GetClientRect, GetMessageW, GetSystemMetrics,
-                GetWindowLongPtrW, IDC_CROSS, IDOK, IDYES, IsWindow, KillTimer, LWA_ALPHA,
-                LoadCursorW, MB_ICONERROR, MB_OK, MB_OKCANCEL, MB_YESNO, MSG, MessageBoxW,
-                RegisterClassW, SM_CXVIRTUALSCREEN, SM_CYVIRTUALSCREEN, SM_XVIRTUALSCREEN,
-                SM_YVIRTUALSCREEN, SW_SHOW, SetLayeredWindowAttributes, SetTimer,
-                SetWindowDisplayAffinity, ShowWindow, TranslateMessage, WDA_EXCLUDEFROMCAPTURE,
-                WM_DESTROY, WM_HOTKEY, WM_LBUTTONDOWN, WM_LBUTTONUP, WM_MOUSEMOVE, WM_PAINT,
-                WM_TIMER, WNDCLASSW, WS_EX_LAYERED, WS_EX_TOOLWINDOW, WS_EX_TOPMOST, WS_POPUP,
+                GetWindowLongPtrW, IDC_CROSS, IDCANCEL, IDOK, IDYES, IsWindow, KillTimer,
+                LWA_ALPHA, LoadCursorW, MB_ICONERROR, MB_OK, MB_OKCANCEL, MB_YESNO, MB_YESNOCANCEL,
+                MSG, MessageBoxW, RegisterClassW, SM_CXVIRTUALSCREEN, SM_CYVIRTUALSCREEN,
+                SM_XVIRTUALSCREEN, SM_YVIRTUALSCREEN, SW_SHOW, SetLayeredWindowAttributes,
+                SetTimer, SetWindowDisplayAffinity, ShowWindow, TranslateMessage,
+                WDA_EXCLUDEFROMCAPTURE, WM_DESTROY, WM_HOTKEY, WM_LBUTTONDOWN, WM_LBUTTONUP,
+                WM_MOUSEMOVE, WM_PAINT, WM_TIMER, WNDCLASSW, WS_EX_LAYERED, WS_EX_TOOLWINDOW,
+                WS_EX_TOPMOST, WS_POPUP,
             },
         },
     },
@@ -179,6 +180,7 @@ fn review_recording(recording: &mut Recording) {
     if show_question(&message) != IDYES {
         return;
     }
+    let quality = choose_quality();
     let output = match crate::output_path() {
         Ok(path) => path,
         Err(error) => {
@@ -189,7 +191,7 @@ fn review_recording(recording: &mut Recording) {
         recording,
         &output,
         crate::GifMode::Full,
-        crate::GifQuality::Balanced,
+        quality,
         std::time::Duration::ZERO,
         recording.end(),
     ) {
@@ -198,6 +200,17 @@ fn review_recording(recording: &mut Recording) {
             &format!("GIF encoding failed: {error}"),
             MB_OK | MB_ICONERROR,
         ),
+    }
+}
+
+fn choose_quality() -> crate::GifQuality {
+    let choice = show_choice(
+        "GIF quality:\n\nYes = Fast (quickest)\nNo = Balanced\nCancel = Best (smallest / slowest)",
+    );
+    match choice {
+        IDYES => crate::GifQuality::Fast,
+        IDCANCEL => crate::GifQuality::Best,
+        _ => crate::GifQuality::Balanced,
     }
 }
 
@@ -504,4 +517,16 @@ fn show_text(text: &str, flags: windows::Win32::UI::WindowsAndMessaging::MESSAGE
 fn show_question(text: &str) -> windows::Win32::UI::WindowsAndMessaging::MESSAGEBOX_RESULT {
     let wide: Vec<u16> = text.encode_utf16().chain(Some(0)).collect();
     unsafe { MessageBoxW(None, PCWSTR(wide.as_ptr()), w!("QuickGIFlick"), MB_YESNO) }
+}
+
+fn show_choice(text: &str) -> windows::Win32::UI::WindowsAndMessaging::MESSAGEBOX_RESULT {
+    let wide: Vec<u16> = text.encode_utf16().chain(Some(0)).collect();
+    unsafe {
+        MessageBoxW(
+            None,
+            PCWSTR(wide.as_ptr()),
+            w!("QuickGIFlick quality"),
+            MB_YESNOCANCEL,
+        )
+    }
 }

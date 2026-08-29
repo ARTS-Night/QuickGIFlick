@@ -10,9 +10,13 @@ only after an explicit confirmation.
 
 When capture stops, the worker returns the bounded Delta timeline to the UI
 instead of encoding immediately. Review shows the elapsed duration and update
-count, then offers Save (balanced full-canvas GIF) or Discard. The retained
+count, then offers Save or Discard. The retained
 timeline is the foundation for trim and quality controls without blocking
 capture on GIF encoding.
+
+After Save, a compact native quality choice selects Fast, Balanced, or Best
+quantization. It changes only GIF encoding work; capture and the Delta timeline
+are unchanged.
 
 During a drag, the overlay uses a Win32 window region to cut the selected
 rectangle out of the translucent dimmer. The selected desktop pixels therefore
