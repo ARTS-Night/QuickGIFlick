@@ -8,6 +8,12 @@ desktop using Windows virtual-screen metrics, converts the selected screen
 coordinates into `CaptureSource::Region`, and starts the existing recorder
 only after an explicit confirmation.
 
+During a drag, the overlay uses a Win32 window region to cut the selected
+rectangle out of the translucent dimmer. The selected desktop pixels therefore
+remain at normal brightness; the overlay keeps mouse capture until the drag
+ends. This avoids treating a drawn white rectangle as a substitute for an
+actual selection preview.
+
 The controller sets `DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2` before it
 creates any Win32 window. This keeps the selection overlay and ScreenDelta's
 desktop `Region` in physical pixels rather than DPI-virtualized coordinates.

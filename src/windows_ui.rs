@@ -18,8 +18,9 @@ use windows::{
     Win32::{
         Foundation::{COLORREF, GlobalFree, HANDLE, HWND, LPARAM, LRESULT, POINT, RECT, WPARAM},
         Graphics::Gdi::{
-            BLACK_BRUSH, BeginPaint, DT_CENTER, DT_SINGLELINE, DT_VCENTER, DrawTextW, EndPaint,
-            GetStockObject, InvalidateRect, PAINTSTRUCT, Rectangle,
+            BLACK_BRUSH, BeginPaint, CombineRgn, CreateRectRgn, DT_CENTER, DT_SINGLELINE,
+            DT_VCENTER, DeleteObject, DrawTextW, EndPaint, GetStockObject, InvalidateRect,
+            PAINTSTRUCT, RGN_DIFF, Rectangle, SetWindowRgn,
         },
         System::{
             DataExchange::{CloseClipboard, EmptyClipboard, OpenClipboard, SetClipboardData},
@@ -326,6 +327,7 @@ unsafe extern "system" fn overlay_proc(
             let state = unsafe { state(hwnd) };
             if state.start.is_some() {
                 state.current = point_from_lparam(lparam);
+                unsafe { update_overlay_cutout(hwnd, state) };
                 let _ = unsafe { InvalidateRect(Some(hwnd), None, true) };
             }
             LRESULT(0)
@@ -423,6 +425,33 @@ unsafe extern "system" fn hud_proc(
 
 unsafe fn state(hwnd: HWND) -> &'static mut OverlayState {
     unsafe { &mut *(GetWindowLongPtrW(hwnd, GWLP_USERDATA) as *mut OverlayState) }
+}
+
+/// Make only the unselected area part of the layered overlay.  Unlike drawing
+/// a pale rectangle over a uniformly translucent window, this leaves the
+/// selected desktop pixels unmodified while capture remains held by the
+/// overlay window.
+unsafe fn update_overlay_cutout(hwnd: HWND, state: &OverlayState) {
+    let Some(start) = state.start else {
+        return;
+    };
+    let mut client = RECT::default();
+    if unsafe { GetClientRect(hwnd, &mut client) }.is_err() {
+        return;
+    }
+    let outer = unsafe { CreateRectRgn(client.left, client.top, client.right, client.bottom) };
+    let selected = unsafe {
+        CreateRectRgn(
+            start.x.min(state.current.x),
+            start.y.min(state.current.y),
+            start.x.max(state.current.x),
+            start.y.max(state.current.y),
+        )
+    };
+    let _ = unsafe { CombineRgn(Some(outer), Some(outer), Some(selected), RGN_DIFF) };
+    // SetWindowRgn takes ownership of `outer`; `selected` remains ours.
+    let _ = unsafe { SetWindowRgn(hwnd, Some(outer), true) };
+    let _ = unsafe { DeleteObject(selected.into()) };
 }
 
 fn point_from_lparam(value: LPARAM) -> POINT {
