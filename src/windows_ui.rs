@@ -206,7 +206,10 @@ fn review_recording(recording: &mut Recording) {
 
 fn choose_trim_range(end: std::time::Duration) -> (std::time::Duration, std::time::Duration) {
     let midpoint = end / 2;
-    match show_choice("Trim range:\n\nYes = first half\nNo = last half\nCancel = full recording") {
+    match show_choice(
+        "QuickGIFlick trim",
+        "Trim range:\n\nYes = first half\nNo = last half\nCancel = full recording",
+    ) {
         IDYES => (std::time::Duration::ZERO, midpoint),
         IDNO => (midpoint, end),
         _ => (std::time::Duration::ZERO, end),
@@ -215,6 +218,7 @@ fn choose_trim_range(end: std::time::Duration) -> (std::time::Duration, std::tim
 
 fn choose_quality() -> crate::GifQuality {
     let choice = show_choice(
+        "QuickGIFlick quality",
         "GIF quality:\n\nYes = Fast (quickest)\nNo = Balanced\nCancel = Best (smallest / slowest)",
     );
     match choice {
@@ -529,13 +533,17 @@ fn show_question(text: &str) -> windows::Win32::UI::WindowsAndMessaging::MESSAGE
     unsafe { MessageBoxW(None, PCWSTR(wide.as_ptr()), w!("QuickGIFlick"), MB_YESNO) }
 }
 
-fn show_choice(text: &str) -> windows::Win32::UI::WindowsAndMessaging::MESSAGEBOX_RESULT {
+fn show_choice(
+    title: &str,
+    text: &str,
+) -> windows::Win32::UI::WindowsAndMessaging::MESSAGEBOX_RESULT {
     let wide: Vec<u16> = text.encode_utf16().chain(Some(0)).collect();
+    let wide_title: Vec<u16> = title.encode_utf16().chain(Some(0)).collect();
     unsafe {
         MessageBoxW(
             None,
             PCWSTR(wide.as_ptr()),
-            w!("QuickGIFlick quality"),
+            PCWSTR(wide_title.as_ptr()),
             MB_YESNOCANCEL,
         )
     }
