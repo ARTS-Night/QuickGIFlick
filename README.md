@@ -33,6 +33,11 @@ cargo run --release
 Release builds use the Windows GUI subsystem and do not open a console window.
 Use the normal debug build for console diagnostics.
 
+Every push to `main` runs the Windows release build. Download the resulting
+`QuickGIFlick-windows-x64-*` artifact from the GitHub Actions run. Pushing a
+version tag such as `v0.1.0` also attaches `quickgiflick.exe` to a GitHub
+Release.
+
 For development/debugging, run from the repository directory:
 
 ```powershell
