@@ -1,6 +1,8 @@
 param(
     [int]$Seconds = 5,
-    [string[]]$Scenario = @('static', 'cursor', 'small', 'typing', 'scroll', 'window-move', 'full')
+    [string[]]$Scenario = @('static', 'cursor', 'small', 'typing', 'scroll', 'window-move', 'full'),
+    [ValidateSet('fast', 'balanced', 'best')]
+    [string]$Quality = 'balanced'
 )
 
 $ErrorActionPreference = 'Stop'
@@ -28,6 +30,7 @@ $rows = foreach ($name in $Scenario) {
         $recorderInfo.RedirectStandardError = $true
         $recorderInfo.Environment['QUICKGIFFLICK_BENCH'] = '1'
         $recorderInfo.Environment['QUICKGIFFLICK_SECONDS'] = "$Seconds"
+        $recorderInfo.Environment['QUICKGIFFLICK_QUALITY'] = $Quality
         if ($mode -eq 'partial') { $recorderInfo.Environment['QUICKGIFFLICK_GIF_MODE'] = 'partial' }
         $watch = [Diagnostics.Stopwatch]::StartNew()
         $recorder = [Diagnostics.Process]::Start($recorderInfo)
@@ -46,6 +49,7 @@ $rows = foreach ($name in $Scenario) {
         [pscustomobject]@{
             scenario = $name
             mode = $mode
+            quality = $Quality
             seconds = $Seconds
             recorder_wall_ms = [math]::Round($watch.Elapsed.TotalMilliseconds, 3)
             output_bytes = $fileBytes

@@ -24,6 +24,11 @@ cargo run --release
 For repeatable benchmark capture rather than the UI, use
 `$env:QUICKGIFFLICK_BENCH=1` and set `QUICKGIFFLICK_SECONDS`.
 
+`QUICKGIFFLICK_QUALITY` accepts `fast`, `balanced` (default), or `best` for
+the GIF palette quantizer. These presets do not alter capture resolution or
+ScreenDelta's transport policy; see the measured trade-off in
+[`docs/experiments/2026-08-29-quality-presets.md`](docs/experiments/2026-08-29-quality-presets.md).
+
 The in-memory pixel budget defaults to 32 MiB. Payload beyond that budget is
 kept in an automatically removed temporary file so recording memory does not
 grow with duration. Set `QUICKGIFFLICK_RECORDING_MEMORY_MB` only when testing a

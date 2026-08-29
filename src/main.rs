@@ -87,10 +87,12 @@ pub(crate) fn run_recording_until(
     let output = output_path()?;
     let encode_started = Instant::now();
     let mode = GifMode::from_env();
-    let encode = encode_recording(&mut recording, &output, mode)?;
+    let quality = GifQuality::from_env();
+    let encode = encode_recording(&mut recording, &output, mode, quality)?;
     eprintln!(
-        "encode mode={} wall_ms={:.3} reconstruction_ms={:.3} conversion_ms={:.3} quantization_ms={:.3} encoder_ms={:.3} finalize_ms={:.3} frames={}",
+        "encode mode={} quality={} wall_ms={:.3} reconstruction_ms={:.3} conversion_ms={:.3} quantization_ms={:.3} encoder_ms={:.3} finalize_ms={:.3} frames={}",
         mode.name(),
+        quality.name(),
         encode_started.elapsed().as_secs_f64() * 1_000.0,
         encode.reconstruction.as_secs_f64() * 1_000.0,
         encode.conversion.as_secs_f64() * 1_000.0,
@@ -115,6 +117,7 @@ fn encode_recording(
     recording: &mut Recording,
     output: &PathBuf,
     mode: GifMode,
+    quality: GifQuality,
 ) -> Result<EncodeStats, Box<dyn std::error::Error>> {
     let mut stats = EncodeStats::default();
     let reconstruction_started = Instant::now();
@@ -142,6 +145,7 @@ fn encode_recording(
             clock.advance(at.saturating_sub(last)),
             &mut gif_pixels,
             &mut stats,
+            quality,
         )?;
         let reconstruction_started = Instant::now();
         recording.apply_update(index, &mut canvas)?;
@@ -159,6 +163,7 @@ fn encode_recording(
         clock.advance(recording.end().saturating_sub(last)).max(1),
         &mut gif_pixels,
         &mut stats,
+        quality,
     )?;
     let finalize_started = Instant::now();
     drop(encoder);
@@ -174,6 +179,7 @@ fn write_region(
     delay: u16,
     rgba: &mut Vec<u8>,
     stats: &mut EncodeStats,
+    quality: GifQuality,
 ) -> Result<(), gif::EncodingError> {
     let conversion_started = Instant::now();
     rgba.clear();
@@ -193,7 +199,7 @@ fn write_region(
         region.size.width as u16,
         region.size.height as u16,
         rgba,
-        10,
+        quality.quantizer_speed(),
     );
     stats.quantization += quantization_started.elapsed();
     frame.delay = delay;
@@ -214,6 +220,41 @@ fn full_bounds(frame: &CpuFrame) -> screendelta::Region {
 enum GifMode {
     Full,
     Partial,
+}
+
+/// Encoder presets intentionally expose only the quantizer work/size tradeoff.
+/// Capture resolution and ScreenDelta transport remain independent decisions.
+#[derive(Clone, Copy)]
+enum GifQuality {
+    Fast,
+    Balanced,
+    Best,
+}
+
+impl GifQuality {
+    fn from_env() -> Self {
+        match std::env::var("QUICKGIFFLICK_QUALITY").as_deref() {
+            Ok("fast") => Self::Fast,
+            Ok("best") => Self::Best,
+            _ => Self::Balanced,
+        }
+    }
+
+    fn name(self) -> &'static str {
+        match self {
+            Self::Fast => "fast",
+            Self::Balanced => "balanced",
+            Self::Best => "best",
+        }
+    }
+
+    fn quantizer_speed(self) -> i32 {
+        match self {
+            Self::Fast => 20,
+            Self::Balanced => 10,
+            Self::Best => 1,
+        }
+    }
 }
 
 impl GifMode {
@@ -318,7 +359,13 @@ mod tests {
             "QuickGIFlick_partial_test_{}.gif",
             std::process::id()
         ));
-        encode_recording(&mut recording, &path, GifMode::Partial).unwrap();
+        encode_recording(
+            &mut recording,
+            &path,
+            GifMode::Partial,
+            GifQuality::Balanced,
+        )
+        .unwrap();
         let mut options = gif::DecodeOptions::new();
         options.set_color_output(gif::ColorOutput::RGBA);
         let mut decoder = options.read_info(File::open(&path).unwrap()).unwrap();
