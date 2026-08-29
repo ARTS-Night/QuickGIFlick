@@ -182,6 +182,27 @@ impl Recording {
         self.spilled_payload_bytes
     }
 
+    /// A cheap, content-aware GIF size estimate for Review.  It weighs the
+    /// initial canvas and the actual Full/Delta payload areas, rather than
+    /// treating every timestamp as a complete frame.
+    pub fn estimated_gif_bytes(&self) -> usize {
+        let mut changed_bytes = self.initial.width as usize * self.initial.height as usize * 4;
+        let mut visual_updates = 1usize;
+        for update in &self.updates {
+            visual_updates += 1;
+            changed_bytes = changed_bytes.saturating_add(match update {
+                Update::Full { frame, .. } => frame.width as usize * frame.height as usize * 4,
+                Update::Delta { regions, .. } => regions
+                    .iter()
+                    .map(|region| region.pixels.width as usize * region.pixels.height as usize * 4)
+                    .sum(),
+            });
+        }
+        // GIF is indexed and LZW-compressed. This intentionally conservative
+        // ratio is only a Review estimate; Save reports the exact byte count.
+        changed_bytes / 6 + visual_updates.saturating_mul(128)
+    }
+
     pub fn store_time(&self) -> Duration {
         self.store_time
     }
@@ -362,5 +383,24 @@ mod tests {
             .unwrap();
         let canvas = recording.canvas_at(Duration::from_millis(15)).unwrap();
         assert_eq!(&canvas.frame.data[4..8], &[7, 7, 7, 7]);
+    }
+
+    #[test]
+    fn estimated_size_uses_delta_area_instead_of_full_canvas_per_update() {
+        let initial = frame(4, 4, 0);
+        let mut delta = Recording::new(initial.clone(), 1024).unwrap();
+        delta
+            .append_delta(
+                Duration::from_millis(10),
+                vec![DeltaRegion {
+                    region: Region::new(0, 0, 1, 1).unwrap(),
+                    pixels: frame(1, 1, 1),
+                }],
+            )
+            .unwrap();
+        let mut full = Recording::new(initial, 1024).unwrap();
+        full.append_full(Duration::from_millis(10), frame(4, 4, 1))
+            .unwrap();
+        assert!(delta.estimated_gif_bytes() < full.estimated_gif_bytes());
     }
 }

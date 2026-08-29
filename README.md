@@ -13,7 +13,7 @@ desktop selection overlay, accepts a selected region, and asks for explicit
 Record or Cancel confirmation. Recording runs on a worker and can be stopped
 with `Win + Shift + G` (or the recording HUD). It uses ScreenDelta `Full` / `Delta` /
 `Unchanged` updates, then opens Review with elapsed time and timeline-update
-count. Choose Save or Discard; Save then selects Fast, Balanced, or Best GIF
+count plus a content-aware estimated GIF size. Choose Save or Discard; Save then selects Fast, Balanced, or Best GIF
 quality and writes `%USERPROFILE%\\Videos\\QuickGIFlick\\QuickGIFlick_YYYY-MM-DD_HH-MM-SS.gif`.
 Before quality selection, Review provides Start and End fields in seconds,
 plus Full range and Cancel. The encoder reconstructs the canvas at the chosen

@@ -215,9 +215,10 @@ fn finish_recording(active: &mut Option<ActiveRecording>) {
 
 fn review_recording(recording: &mut Recording) {
     let message = format!(
-        "Review: {:.2}s, {} timeline updates.\n\nSave a balanced GIF now?",
+        "Review: {:.2}s, {} timeline updates.\nEstimated GIF size: ~{} KiB\n\nSave a balanced GIF now?",
         recording.end().as_secs_f64(),
         recording.update_len(),
+        recording.estimated_gif_bytes() / 1024,
     );
     if show_question(&message) != IDYES {
         return;
