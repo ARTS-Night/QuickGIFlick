@@ -2,6 +2,7 @@
 //! ScreenDelta remains the capture backend and the recorder runs only after a
 //! user has chosen a screen-space region.
 
+use std::os::windows::ffi::OsStrExt;
 use std::{
     error::Error,
     sync::{
@@ -15,27 +16,33 @@ use std::{
 use screendelta::{CaptureSource, Region};
 use windows::{
     Win32::{
-        Foundation::{COLORREF, HWND, LPARAM, LRESULT, POINT, RECT, WPARAM},
+        Foundation::{COLORREF, GlobalFree, HANDLE, HWND, LPARAM, LRESULT, POINT, RECT, WPARAM},
         Graphics::Gdi::{
             BLACK_BRUSH, BeginPaint, DT_CENTER, DT_SINGLELINE, DT_VCENTER, DrawTextW, EndPaint,
             GetStockObject, InvalidateRect, PAINTSTRUCT, Rectangle,
         },
-        System::LibraryLoader::GetModuleHandleW,
+        System::{
+            DataExchange::{CloseClipboard, EmptyClipboard, OpenClipboard, SetClipboardData},
+            LibraryLoader::GetModuleHandleW,
+            Memory::{GMEM_MOVEABLE, GlobalAlloc, GlobalLock, GlobalUnlock},
+            Ole::CF_HDROP,
+        },
         UI::{
             Input::KeyboardAndMouse::{
                 MOD_NOREPEAT, MOD_SHIFT, MOD_WIN, RegisterHotKey, ReleaseCapture, SetCapture,
                 UnregisterHotKey,
             },
+            Shell::DROPFILES,
             WindowsAndMessaging::{
                 CS_HREDRAW, CS_VREDRAW, CreateWindowExW, DefWindowProcW, DestroyWindow,
                 DispatchMessageW, GWLP_USERDATA, GetClientRect, GetMessageW, GetSystemMetrics,
-                GetWindowLongPtrW, IDC_CROSS, IDOK, IsWindow, KillTimer, LWA_ALPHA, LoadCursorW,
-                MB_ICONERROR, MB_OK, MB_OKCANCEL, MSG, MessageBoxW, RegisterClassW,
-                SM_CXVIRTUALSCREEN, SM_CYVIRTUALSCREEN, SM_XVIRTUALSCREEN, SM_YVIRTUALSCREEN,
-                SW_SHOW, SetLayeredWindowAttributes, SetTimer, SetWindowDisplayAffinity,
-                ShowWindow, TranslateMessage, WDA_EXCLUDEFROMCAPTURE, WM_DESTROY, WM_HOTKEY,
-                WM_LBUTTONDOWN, WM_LBUTTONUP, WM_MOUSEMOVE, WM_PAINT, WM_TIMER, WNDCLASSW,
-                WS_EX_LAYERED, WS_EX_TOOLWINDOW, WS_EX_TOPMOST, WS_POPUP,
+                GetWindowLongPtrW, IDC_CROSS, IDOK, IDYES, IsWindow, KillTimer, LWA_ALPHA,
+                LoadCursorW, MB_ICONERROR, MB_OK, MB_OKCANCEL, MB_YESNO, MSG, MessageBoxW,
+                RegisterClassW, SM_CXVIRTUALSCREEN, SM_CYVIRTUALSCREEN, SM_XVIRTUALSCREEN,
+                SM_YVIRTUALSCREEN, SW_SHOW, SetLayeredWindowAttributes, SetTimer,
+                SetWindowDisplayAffinity, ShowWindow, TranslateMessage, WDA_EXCLUDEFROMCAPTURE,
+                WM_DESTROY, WM_HOTKEY, WM_LBUTTONDOWN, WM_LBUTTONUP, WM_MOUSEMOVE, WM_PAINT,
+                WM_TIMER, WNDCLASSW, WS_EX_LAYERED, WS_EX_TOOLWINDOW, WS_EX_TOPMOST, WS_POPUP,
             },
         },
     },
@@ -150,9 +157,58 @@ fn finish_recording(active: &mut Option<ActiveRecording>) {
         .expect("HUD stop lock") = None;
     *active = None;
     match result {
-        Ok(path) => show_text(&format!("Saved {}", path.display()), MB_OK),
+        Ok(path) => offer_copy(&path),
         Err(error) => show_text(&format!("Recording failed: {error}"), MB_OK | MB_ICONERROR),
     }
+}
+
+fn offer_copy(path: &std::path::Path) {
+    let message = format!("Saved {}\n\nCopy GIF file to clipboard?", path.display());
+    let answer = show_question(&message);
+    if answer == IDYES {
+        match copy_file_to_clipboard(path) {
+            Ok(()) => show_text("GIF file copied to clipboard.", MB_OK),
+            Err(error) => show_text(
+                &format!("Clipboard copy failed: {error}"),
+                MB_OK | MB_ICONERROR,
+            ),
+        }
+    }
+}
+
+fn copy_file_to_clipboard(path: &std::path::Path) -> Result<(), Box<dyn Error>> {
+    let mut name: Vec<u16> = path.as_os_str().encode_wide().chain([0, 0]).collect();
+    let bytes = std::mem::size_of::<DROPFILES>() + std::mem::size_of_val(name.as_slice());
+    unsafe {
+        let memory = GlobalAlloc(GMEM_MOVEABLE, bytes)?;
+        let pointer = GlobalLock(memory);
+        if pointer.is_null() {
+            let _ = GlobalFree(Some(memory));
+            return Err("GlobalLock failed".into());
+        }
+        let header = pointer.cast::<DROPFILES>();
+        *header = DROPFILES {
+            pFiles: std::mem::size_of::<DROPFILES>() as u32,
+            fWide: true.into(),
+            ..Default::default()
+        };
+        std::ptr::copy_nonoverlapping(
+            name.as_mut_ptr().cast::<u8>(),
+            pointer.cast::<u8>().add(std::mem::size_of::<DROPFILES>()),
+            std::mem::size_of_val(name.as_slice()),
+        );
+        let _ = GlobalUnlock(memory);
+        OpenClipboard(None)?;
+        if let Err(error) = EmptyClipboard()
+            .and_then(|_| SetClipboardData(CF_HDROP.0 as u32, Some(HANDLE(memory.0))))
+        {
+            let _ = CloseClipboard();
+            let _ = GlobalFree(Some(memory));
+            return Err(error.into());
+        }
+        CloseClipboard()?;
+    }
+    Ok(())
 }
 
 fn show_recording_hud() -> Result<HWND, Box<dyn Error>> {
@@ -376,4 +432,9 @@ fn show_text(text: &str, flags: windows::Win32::UI::WindowsAndMessaging::MESSAGE
     unsafe {
         let _ = MessageBoxW(None, PCWSTR(wide.as_ptr()), w!("QuickGIFlick"), flags);
     }
+}
+
+fn show_question(text: &str) -> windows::Win32::UI::WindowsAndMessaging::MESSAGEBOX_RESULT {
+    let wide: Vec<u16> = text.encode_utf16().chain(Some(0)).collect();
+    unsafe { MessageBoxW(None, PCWSTR(wide.as_ptr()), w!("QuickGIFlick"), MB_YESNO) }
 }

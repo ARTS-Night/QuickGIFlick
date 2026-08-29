@@ -35,6 +35,13 @@ the three-second development cap. The exclusion flag means screenshot-driven
 automation cannot be used to prove the HUD click hit-test; the hotkey is the
 verified stop path.
 
+Save then offers **Yes / No** for Copy. In a Windows MCP run, **Yes** produced
+the `GIF file copied to clipboard` success dialog. Windows MCP's clipboard read
+reported non-text data, as expected for the `CF_HDROP` file-drop format used by
+the implementation. This proves construction and ownership transfer of the
+file clipboard item; attachment behaviour in individual third-party apps still
+needs app-specific compatibility coverage.
+
 This verifies global-hotkey dispatch, overlay input, non-blocking region capture,
 Stop timing, GIF creation, and GIF timing on an interactive Windows desktop. It does not claim
 multi-monitor, review/trim, tray, clipboard, HUD exclusion, or browser
