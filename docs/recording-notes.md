@@ -6,8 +6,9 @@ GIF frame's delay. This preserves recording duration on static screens and
 avoids redundant GIF image data.
 
 The first frame still waits for a real desktop update, which is the current
-Desktop Duplication baseline limitation. Selection UI, cursor composition, and
-long-recording buffering remain future work.
+Desktop Duplication baseline limitation. The native selection UI and bounded
+spill-backed long-recording buffer are implemented; cursor composition remains
+future work.
 
 ## Timing correction
 
