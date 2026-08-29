@@ -46,6 +46,34 @@ pub(crate) fn run_recording_until(
     source: CaptureSource,
     stop: Option<&AtomicBool>,
 ) -> Result<PathBuf, Box<dyn std::error::Error>> {
+    let mut recording = capture_recording_until(source, stop)?;
+    let output = output_path()?;
+    let encode_started = Instant::now();
+    let mode = GifMode::from_env();
+    let quality = GifQuality::from_env();
+    let encode = encode_recording(&mut recording, &output, mode, quality)?;
+    eprintln!(
+        "encode mode={} quality={} wall_ms={:.3} reconstruction_ms={:.3} conversion_ms={:.3} quantization_ms={:.3} encoder_ms={:.3} finalize_ms={:.3} frames={}",
+        mode.name(),
+        quality.name(),
+        encode_started.elapsed().as_secs_f64() * 1_000.0,
+        encode.reconstruction.as_secs_f64() * 1_000.0,
+        encode.conversion.as_secs_f64() * 1_000.0,
+        encode.quantization.as_secs_f64() * 1_000.0,
+        encode.encoder.as_secs_f64() * 1_000.0,
+        encode.finalize.as_secs_f64() * 1_000.0,
+        encode.frames,
+    );
+    println!("Saved {}", output.display());
+    Ok(output)
+}
+
+/// Captures a bounded Delta timeline without encoding it. The native review UI
+/// owns the resulting timeline and may encode a trimmed range later.
+pub(crate) fn capture_recording_until(
+    source: CaptureSource,
+    stop: Option<&AtomicBool>,
+) -> Result<Recording, Box<dyn std::error::Error>> {
     let mut capture = CaptureSession::start(CaptureConfig { source })?;
     let initial = capture.next_frame()?;
     let capture_origin = initial.timestamp();
@@ -83,25 +111,7 @@ pub(crate) fn run_recording_until(
         recording.store_time().as_secs_f64() * 1_000.0,
         capture.stats(),
     );
-    let output = output_path()?;
-    let encode_started = Instant::now();
-    let mode = GifMode::from_env();
-    let quality = GifQuality::from_env();
-    let encode = encode_recording(&mut recording, &output, mode, quality)?;
-    eprintln!(
-        "encode mode={} quality={} wall_ms={:.3} reconstruction_ms={:.3} conversion_ms={:.3} quantization_ms={:.3} encoder_ms={:.3} finalize_ms={:.3} frames={}",
-        mode.name(),
-        quality.name(),
-        encode_started.elapsed().as_secs_f64() * 1_000.0,
-        encode.reconstruction.as_secs_f64() * 1_000.0,
-        encode.conversion.as_secs_f64() * 1_000.0,
-        encode.quantization.as_secs_f64() * 1_000.0,
-        encode.encoder.as_secs_f64() * 1_000.0,
-        encode.finalize.as_secs_f64() * 1_000.0,
-        encode.frames,
-    );
-    println!("Saved {}", output.display());
-    Ok(output)
+    Ok(recording)
 }
 
 fn recording_memory_budget() -> usize {
@@ -131,7 +141,7 @@ fn encode_recording(
 /// Encodes the recording range `[start, end]`. The first GIF frame is rebuilt
 /// from the Delta timeline at `start`, so trim points between updates retain
 /// every unchanged pixel.
-fn encode_recording_range(
+pub(crate) fn encode_recording_range(
     recording: &mut Recording,
     output: &PathBuf,
     mode: GifMode,
@@ -246,7 +256,7 @@ fn full_bounds(frame: &CpuFrame) -> screendelta::Region {
 }
 
 #[derive(Clone, Copy)]
-enum GifMode {
+pub(crate) enum GifMode {
     Full,
     Partial,
 }
@@ -254,7 +264,7 @@ enum GifMode {
 /// Encoder presets intentionally expose only the quantizer work/size tradeoff.
 /// Capture resolution and ScreenDelta transport remain independent decisions.
 #[derive(Clone, Copy)]
-enum GifQuality {
+pub(crate) enum GifQuality {
     Fast,
     Balanced,
     Best,
@@ -325,7 +335,7 @@ impl GifClock {
     }
 }
 
-fn output_path() -> Result<PathBuf, Box<dyn std::error::Error>> {
+pub(crate) fn output_path() -> Result<PathBuf, Box<dyn std::error::Error>> {
     let dir = std::env::var_os("USERPROFILE").ok_or("USERPROFILE is not set")?;
     let dir = PathBuf::from(dir).join("Videos").join("QuickGIFlick");
     std::fs::create_dir_all(&dir)?;

@@ -13,6 +13,7 @@ use std::{
     thread,
 };
 
+use crate::recording::Recording;
 use screendelta::{CaptureSource, Region};
 use windows::{
     Win32::{
@@ -66,7 +67,7 @@ struct OverlayState {
 
 struct ActiveRecording {
     stop: Arc<AtomicBool>,
-    completed: Receiver<Result<std::path::PathBuf, String>>,
+    completed: Receiver<Result<Recording, String>>,
     hud: HWND,
 }
 
@@ -131,8 +132,9 @@ fn start_recording(region: Region) -> Result<ActiveRecording, Box<dyn Error>> {
     let (sender, completed) = mpsc::channel();
     let worker_stop = stop.clone();
     thread::spawn(move || {
-        let result = crate::run_recording_until(CaptureSource::Region(region), Some(&worker_stop))
-            .map_err(|error| error.to_string());
+        let result =
+            crate::capture_recording_until(CaptureSource::Region(region), Some(&worker_stop))
+                .map_err(|error| error.to_string());
         let _ = sender.send(result);
     });
     let hud = show_recording_hud()?;
@@ -163,8 +165,39 @@ fn finish_recording(active: &mut Option<ActiveRecording>) {
         .expect("HUD stop lock") = None;
     *active = None;
     match result {
-        Ok(path) => offer_copy(&path),
+        Ok(mut recording) => review_recording(&mut recording),
         Err(error) => show_text(&format!("Recording failed: {error}"), MB_OK | MB_ICONERROR),
+    }
+}
+
+fn review_recording(recording: &mut Recording) {
+    let message = format!(
+        "Review: {:.2}s, {} timeline updates.\n\nSave a balanced GIF now?",
+        recording.end().as_secs_f64(),
+        recording.update_len(),
+    );
+    if show_question(&message) != IDYES {
+        return;
+    }
+    let output = match crate::output_path() {
+        Ok(path) => path,
+        Err(error) => {
+            return show_text(&format!("Save path failed: {error}"), MB_OK | MB_ICONERROR);
+        }
+    };
+    match crate::encode_recording_range(
+        recording,
+        &output,
+        crate::GifMode::Full,
+        crate::GifQuality::Balanced,
+        std::time::Duration::ZERO,
+        recording.end(),
+    ) {
+        Ok(_) => offer_copy(&output),
+        Err(error) => show_text(
+            &format!("GIF encoding failed: {error}"),
+            MB_OK | MB_ICONERROR,
+        ),
     }
 }
 

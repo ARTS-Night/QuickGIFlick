@@ -8,6 +8,12 @@ desktop using Windows virtual-screen metrics, converts the selected screen
 coordinates into `CaptureSource::Region`, and starts the existing recorder
 only after an explicit confirmation.
 
+When capture stops, the worker returns the bounded Delta timeline to the UI
+instead of encoding immediately. Review shows the elapsed duration and update
+count, then offers Save (balanced full-canvas GIF) or Discard. The retained
+timeline is the foundation for trim and quality controls without blocking
+capture on GIF encoding.
+
 During a drag, the overlay uses a Win32 window region to cut the selected
 rectangle out of the translucent dimmer. The selected desktop pixels therefore
 remain at normal brightness; the overlay keeps mouse capture until the drag
