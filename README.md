@@ -97,7 +97,9 @@ it is resident.
 ## Where files are saved
 
 Saved GIFs go to `%USERPROFILE%\\Videos\\QuickGIFlick\\`. The directory is
-created when needed, and Review displays the exact path after saving. Temporary
+created when needed, and Review displays the exact path after saving. Files use
+`QuickGIFlick_YYYY-MM-DD_HH-MM-SS.gif`; saves in the same second receive a
+`_01`, `_02`, … suffix instead of overwriting an existing GIF. Temporary
 spill files use the Windows temporary directory only when the memory budget is
 exceeded and are removed after a successful recording. The app does not upload
 recordings.

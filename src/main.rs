@@ -6,7 +6,7 @@ mod timeline;
 mod windows_ui;
 
 use std::{
-    fs::File,
+    fs::{File, OpenOptions},
     path::PathBuf,
     sync::atomic::{AtomicBool, Ordering},
     thread,
@@ -207,7 +207,10 @@ pub(crate) fn encode_recording_range(
     let reconstruction_started = Instant::now();
     let mut canvas = recording.canvas_at(start)?;
     stats.reconstruction += reconstruction_started.elapsed();
-    let mut file = File::create(output)?;
+    let mut file = OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .open(output)?;
     let mut encoder = Encoder::new(
         &mut file,
         canvas.frame.width as u16,
@@ -403,7 +406,21 @@ pub(crate) fn output_path() -> Result<PathBuf, Box<dyn std::error::Error>> {
         .duration_since(std::time::UNIX_EPOCH)?
         .as_secs()
         .to_string();
-    Ok(dir.join(format!("QuickGIFlick_{stamp}.gif")))
+    Ok(next_output_path(&dir, &stamp))
+}
+
+fn next_output_path(dir: &std::path::Path, stamp: &str) -> PathBuf {
+    let plain = dir.join(format!("QuickGIFlick_{stamp}.gif"));
+    if !plain.exists() {
+        return plain;
+    }
+    for sequence in 1u32.. {
+        let candidate = dir.join(format!("QuickGIFlick_{stamp}_{sequence:02}.gif"));
+        if !candidate.exists() {
+            return candidate;
+        }
+    }
+    unreachable!("u32 output filename sequence is exhausted")
 }
 
 #[cfg(test)]
@@ -447,6 +464,28 @@ mod tests {
         assert_eq!(recording_seconds_limit_from(None, true), None);
         assert_eq!(recording_seconds_limit_from(None, false), Some(3));
         assert_eq!(recording_seconds_limit_from(Some("60"), true), Some(60));
+    }
+
+    #[test]
+    fn output_path_uses_a_suffix_without_overwriting_an_existing_gif() {
+        let nonce = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let dir = std::env::temp_dir().join(format!(
+            "quickgiflick-output-{}-{nonce}",
+            std::process::id()
+        ));
+        std::fs::create_dir_all(&dir).unwrap();
+        let stamp = "2026-08-30_08-30-00";
+        let first = next_output_path(&dir, stamp);
+        File::create(&first).unwrap();
+        assert_eq!(
+            next_output_path(&dir, stamp).file_name().unwrap(),
+            "QuickGIFlick_2026-08-30_08-30-00_01.gif"
+        );
+        std::fs::remove_file(first).unwrap();
+        std::fs::remove_dir(dir).unwrap();
     }
 
     #[test]
