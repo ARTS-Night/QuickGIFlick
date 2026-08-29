@@ -66,6 +66,11 @@ three-second run.
   directory.
 - A release build has PE subsystem `GUI` and does not require a console.
 - The notification-area icon was visible on the test host.
+- The tray host was found by its registered Windows class and received the
+  native `Open` command; Windows MCP then exposed the QuickGIFlick window.
+  `Start Capture` was likewise dispatched through the tray `WM_COMMAND` path
+  and opened the full-screen selection window. The overflow menu itself still
+  cannot be enumerated by this host's accessibility tree.
 - GIF file clipboard creation was exercised as a `CF_HDROP` item.
 
 ## Validation
