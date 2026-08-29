@@ -15,7 +15,6 @@ use recording::Recording;
 use screendelta::{
     CaptureConfig, CaptureSession, CaptureSource, CaptureUpdate, CpuFrame, FramePacer, monitors,
 };
-use timeline::Canvas;
 
 const DEFAULT_RECORDING_MEMORY_BYTES: usize = 32 * 1024 * 1024;
 
@@ -119,9 +118,33 @@ fn encode_recording(
     mode: GifMode,
     quality: GifQuality,
 ) -> Result<EncodeStats, Box<dyn std::error::Error>> {
+    encode_recording_range(
+        recording,
+        output,
+        mode,
+        quality,
+        Duration::ZERO,
+        recording.end(),
+    )
+}
+
+/// Encodes the recording range `[start, end]`. The first GIF frame is rebuilt
+/// from the Delta timeline at `start`, so trim points between updates retain
+/// every unchanged pixel.
+fn encode_recording_range(
+    recording: &mut Recording,
+    output: &PathBuf,
+    mode: GifMode,
+    quality: GifQuality,
+    start: Duration,
+    end: Duration,
+) -> Result<EncodeStats, Box<dyn std::error::Error>> {
+    if start >= end || end > recording.end() {
+        return Err("GIF range must satisfy 0 <= start < end <= recording end".into());
+    }
     let mut stats = EncodeStats::default();
     let reconstruction_started = Instant::now();
-    let mut canvas = Canvas::new(recording.initial()?);
+    let mut canvas = recording.canvas_at(start)?;
     stats.reconstruction += reconstruction_started.elapsed();
     let mut file = File::create(output)?;
     let mut encoder = Encoder::new(
@@ -132,12 +155,18 @@ fn encode_recording(
     )?;
     encoder.set_repeat(Repeat::Infinite)?;
     let mut clock = GifClock::default();
-    let mut last = Duration::ZERO;
+    let mut last = start;
     let mut gif_pixels = Vec::with_capacity(canvas.frame.data.len());
     let full = full_bounds(&canvas.frame);
     let mut pending = full;
     for index in 0..recording.update_len() {
         let at = recording.update_time(index);
+        if at <= start {
+            continue;
+        }
+        if at > end {
+            break;
+        }
         write_region(
             &mut encoder,
             &canvas.frame,
@@ -160,7 +189,7 @@ fn encode_recording(
         &mut encoder,
         &canvas.frame,
         pending,
-        clock.advance(recording.end().saturating_sub(last)).max(1),
+        clock.advance(end.saturating_sub(last)).max(1),
         &mut gif_pixels,
         &mut stats,
         quality,
@@ -380,6 +409,38 @@ mod tests {
         }
         assert_eq!(&canvas[0..3], &[0, 0, 0]);
         assert_eq!(&canvas[12..15], &[255, 0, 0]);
+        std::fs::remove_file(path).unwrap();
+    }
+
+    #[test]
+    fn trim_starts_from_canvas_reconstructed_at_delta_time() {
+        let mut recording = Recording::new(frame(2, 1, [0, 0, 0, 255]), 1024).unwrap();
+        recording
+            .append_delta(
+                Duration::from_millis(10),
+                vec![DeltaRegion {
+                    region: Region::new(1, 0, 1, 1).unwrap(),
+                    pixels: frame(1, 1, [0, 0, 255, 255]),
+                }],
+            )
+            .unwrap();
+        recording.finish(Duration::from_millis(30));
+        let path =
+            std::env::temp_dir().join(format!("QuickGIFlick_trim_test_{}.gif", std::process::id()));
+        encode_recording_range(
+            &mut recording,
+            &path,
+            GifMode::Full,
+            GifQuality::Balanced,
+            Duration::from_millis(15),
+            Duration::from_millis(30),
+        )
+        .unwrap();
+        let mut options = gif::DecodeOptions::new();
+        options.set_color_output(gif::ColorOutput::RGBA);
+        let mut decoder = options.read_info(File::open(&path).unwrap()).unwrap();
+        let first = decoder.read_next_frame().unwrap().unwrap();
+        assert_eq!(&first.buffer[4..7], &[255, 0, 0]);
         std::fs::remove_file(path).unwrap();
     }
 }

@@ -40,9 +40,11 @@ different budget; it is intentionally not a user-facing setting yet. Set
 `QUICKGIFFLICK_SECONDS` for automated capture duration tests.
 
 The controller is intentionally small while the capture path is being measured:
-review/trim, quality controls, clipboard and tray support are tracked as the
-next product surface. The capture, bounded recording timeline, and encoder are
-kept independent of the Win32 controller.
+the native Review UI and tray support are tracked as the next product surface.
+The timeline now supports reconstructing the canvas at an arbitrary timestamp,
+which is the correctness primitive used for Trim when a trim start falls after
+a Delta update. The capture, bounded recording timeline, and encoder are kept
+independent of the Win32 controller.
 
 ## Validation
 

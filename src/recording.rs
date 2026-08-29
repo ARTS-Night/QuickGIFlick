@@ -154,6 +154,22 @@ impl Recording {
         Ok(())
     }
 
+    /// Reconstructs the canvas visible at `at` without retaining another full
+    /// recording copy. Updates at or before the timestamp are included.
+    pub fn canvas_at(
+        &mut self,
+        at: Duration,
+    ) -> Result<crate::timeline::Canvas, Box<dyn std::error::Error>> {
+        let mut canvas = crate::timeline::Canvas::new(self.initial()?);
+        for index in 0..self.updates.len() {
+            if self.update_time(index) > at {
+                break;
+            }
+            self.apply_update(index, &mut canvas)?;
+        }
+        Ok(canvas)
+    }
+
     pub fn end(&self) -> Duration {
         self.end
     }
@@ -330,5 +346,21 @@ mod tests {
         recording.apply_update(1, &mut canvas).unwrap();
         assert_eq!(canvas.frame.data[0], 3);
         assert_eq!(canvas.frame.data[canvas.frame.stride + 4], 9);
+    }
+
+    #[test]
+    fn reconstructs_canvas_at_delta_timestamp() {
+        let mut recording = Recording::new(frame(2, 1, 0), 1024).unwrap();
+        recording
+            .append_delta(
+                Duration::from_millis(10),
+                vec![DeltaRegion {
+                    region: Region::new(1, 0, 1, 1).unwrap(),
+                    pixels: frame(1, 1, 7),
+                }],
+            )
+            .unwrap();
+        let canvas = recording.canvas_at(Duration::from_millis(15)).unwrap();
+        assert_eq!(&canvas.frame.data[4..8], &[7, 7, 7, 7]);
     }
 }
