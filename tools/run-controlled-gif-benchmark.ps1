@@ -1,6 +1,7 @@
 param(
     [int]$Seconds = 5,
     [string[]]$Scenario = @('static', 'cursor', 'small', 'typing', 'scroll', 'window-move', 'full'),
+    [int[]]$Fps = @(15),
     [ValidateSet('fast', 'balanced', 'best')]
     [string]$Quality = 'balanced'
 )
@@ -16,8 +17,15 @@ if (!(Test-Path $qgif) -or !(Test-Path $inspectGif) -or !(Test-Path $stimulus)) 
 }
 $resultDir = Join-Path $root 'target\bench-results'
 New-Item -ItemType Directory -Force -Path $resultDir | Out-Null
+$rates = foreach ($value in $Fps) {
+    foreach ($rate in $value) {
+        [int]$rate
+    }
+}
 $rows = foreach ($name in $Scenario) {
-    foreach ($mode in @('full', 'partial')) {
+    foreach ($rateValue in $rates) {
+        if ($rateValue -lt 1 -or $rateValue -gt 240) { throw "Fps must be within 1..240; got $rateValue" }
+        foreach ($mode in @('full', 'partial')) {
         $stimulusInfo = [Diagnostics.ProcessStartInfo]::new($stimulus, "$name $($Seconds + 2)")
         $stimulusInfo.WorkingDirectory = $screenDeltaRoot
         $stimulusInfo.UseShellExecute = $false
@@ -30,6 +38,7 @@ $rows = foreach ($name in $Scenario) {
         $recorderInfo.RedirectStandardError = $true
         $recorderInfo.Environment['QUICKGIFFLICK_BENCH'] = '1'
         $recorderInfo.Environment['QUICKGIFFLICK_SECONDS'] = "$Seconds"
+        $recorderInfo.Environment['QUICKGIFFLICK_FPS'] = "$rateValue"
         $recorderInfo.Environment['QUICKGIFFLICK_QUALITY'] = $Quality
         if ($mode -eq 'partial') { $recorderInfo.Environment['QUICKGIFFLICK_GIF_MODE'] = 'partial' }
         $watch = [Diagnostics.Stopwatch]::StartNew()
@@ -50,6 +59,7 @@ $rows = foreach ($name in $Scenario) {
             scenario = $name
             mode = $mode
             quality = $Quality
+            requested_fps = $rateValue
             seconds = $Seconds
             recorder_wall_ms = [math]::Round($watch.Elapsed.TotalMilliseconds, 3)
             output_bytes = $fileBytes
@@ -67,6 +77,7 @@ $rows = foreach ($name in $Scenario) {
             finalize_ms = $stats['finalize_ms']
             raw = $stderr
         }
+    }
     }
 }
 $path = Join-Path $resultDir ("QuickGIFlick_{0:yyyy-MM-dd_HH-mm-ss}.csv" -f (Get-Date))
