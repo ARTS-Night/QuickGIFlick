@@ -33,6 +33,26 @@ cargo run --release
 Release builds use the Windows GUI subsystem and do not open a console window.
 Use the normal debug build for console diagnostics.
 
+For development/debugging, run from the repository directory:
+
+```powershell
+cargo run                 # console diagnostics + interactive controller
+cargo test                # timeline, trim, and cursor-mode checks
+cargo clippy -- -D warnings
+cargo run --example inspect_gif -- .\recording.gif
+```
+
+For a repeatable headless capture check, set the duration and rate before
+launching the debug binary:
+
+```powershell
+$env:QUICKGIFFLICK_BENCH = '1'
+$env:QUICKGIFFLICK_SECONDS = '10'
+$env:QUICKGIFFLICK_FPS = '15'
+cargo run
+Remove-Item Env:QUICKGIFFLICK_BENCH,Env:QUICKGIFFLICK_SECONDS,Env:QUICKGIFFLICK_FPS
+```
+
 For repeatable benchmark capture rather than the UI, use
 `$env:QUICKGIFFLICK_BENCH=1` and set `QUICKGIFFLICK_SECONDS`.
 
