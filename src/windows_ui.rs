@@ -78,7 +78,9 @@ const TRAY_EXIT_ID: usize = 2003;
 fn bundled_icon(
     instance: windows::Win32::Foundation::HINSTANCE,
 ) -> windows::Win32::UI::WindowsAndMessaging::HICON {
-    unsafe { LoadIconW(Some(instance), PCWSTR(1 as *const u16)).unwrap_or_default() }
+    unsafe {
+        LoadIconW(Some(instance), PCWSTR(std::ptr::with_exposed_provenance(1))).unwrap_or_default()
+    }
 }
 const TRIM_START_ID: i32 = 1001;
 const TRIM_END_ID: i32 = 1002;
