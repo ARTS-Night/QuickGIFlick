@@ -74,8 +74,9 @@ Stop timing, GIF creation, GIF timing, and file clipboard construction on an
 interactive Windows desktop. The available host has a single 96-DPI display,
 so it proves the V2 API initializes and this physical-pixel path works there.
 It does not prove mixed-DPI or negative-coordinate multi-monitor operation,
-Review/Trim, Tray, HUD exclusion in a captured GIF, or third-party clipboard
-compatibility; those require their own completed implementations and tests.
+arbitrary Start/End trim controls, Tray, HUD exclusion in a captured GIF, or
+third-party clipboard compatibility; those require their own completed
+implementations and tests.
 
 The HUD requests `SetWindowDisplayAffinity(WDA_EXCLUDEFROMCAPTURE)` best effort.
 Microsoft documents that value as suitable for recording controls on

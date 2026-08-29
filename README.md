@@ -15,6 +15,8 @@ with `Win + Shift + G` (or the recording HUD). It uses ScreenDelta `Full` / `Del
 `Unchanged` updates, then opens Review with elapsed time and timeline-update
 count. Choose Save or Discard; Save then selects Fast, Balanced, or Best GIF
 quality and writes `%USERPROFILE%\\Videos\\QuickGIFlick\\QuickGIFlick_YYYY-MM-DD_HH-MM-SS.gif`.
+Before quality selection, the review flow offers full, first-half, or last-half
+trim presets. The encoder reconstructs the canvas at the chosen start timestamp.
 The current ScreenDelta backend intentionally reports an error rather than
 capturing an invalid region when a selection crosses monitor boundaries.
 
@@ -41,7 +43,7 @@ different budget; it is intentionally not a user-facing setting yet. Set
 `QUICKGIFFLICK_SECONDS` for automated capture duration tests.
 
 The controller is intentionally small while the capture path is being measured:
-native Start/End Trim controls and tray support are the next product surface.
+arbitrary native Start/End trim controls and tray support are the next product surface.
 The timeline now supports reconstructing the canvas at an arbitrary timestamp,
 which is the correctness primitive used for Trim when a trim start falls after
 a Delta update. The capture, bounded recording timeline, and encoder are kept
