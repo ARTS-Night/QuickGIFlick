@@ -44,6 +44,14 @@ Unchanged updates with no composites, and both GIFs decoded to 3.00 seconds.
 This preserves timestamp timing in either mode without forwarding a full frame
 for pointer metadata alone.
 
+The same Original cursor workload then ran for 30 seconds at 15 FPS. Full
+encoded 451 frames and Partial encoded 452; both decoded to 30.01 seconds.
+Full retained 30,299,156 B and Partial retained 22,132,332 B of timeline
+payload, with 0 B spill in both runs. ScreenDelta reported 448 and 450 Delta
+updates respectively, with 451 and 452 cursor composites. This is an actual
+long-running cursor-composition regression, not an extrapolation from the
+three-second run.
+
 ## Windows workflow verified
 
 - `Win + Shift + G` invokes virtual-desktop selection and Record confirmation.
