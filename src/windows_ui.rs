@@ -10,8 +10,11 @@ use std::{
 use screendelta::{CaptureSource, Region};
 use windows::{
     Win32::{
-        Foundation::{HWND, LPARAM, LRESULT, POINT, WPARAM},
-        Graphics::Gdi::{BeginPaint, EndPaint, InvalidateRect, PAINTSTRUCT, Rectangle},
+        Foundation::{COLORREF, HWND, LPARAM, LRESULT, POINT, WPARAM},
+        Graphics::Gdi::{
+            BLACK_BRUSH, BeginPaint, EndPaint, GetStockObject, InvalidateRect, PAINTSTRUCT,
+            Rectangle,
+        },
         System::LibraryLoader::GetModuleHandleW,
         UI::{
             Input::KeyboardAndMouse::{
@@ -21,11 +24,12 @@ use windows::{
             WindowsAndMessaging::{
                 CS_HREDRAW, CS_VREDRAW, CreateWindowExW, DefWindowProcW, DestroyWindow,
                 DispatchMessageW, GWLP_USERDATA, GetMessageW, GetSystemMetrics, GetWindowLongPtrW,
-                IDC_CROSS, IDOK, IsWindow, LoadCursorW, MB_ICONERROR, MB_OK, MB_OKCANCEL, MSG,
-                MessageBoxW, RegisterClassW, SM_CXVIRTUALSCREEN, SM_CYVIRTUALSCREEN,
-                SM_XVIRTUALSCREEN, SM_YVIRTUALSCREEN, SW_SHOW, ShowWindow, TranslateMessage,
-                WM_DESTROY, WM_HOTKEY, WM_LBUTTONDOWN, WM_LBUTTONUP, WM_MOUSEMOVE, WM_PAINT,
-                WNDCLASSW, WS_EX_LAYERED, WS_EX_TOOLWINDOW, WS_EX_TOPMOST, WS_POPUP,
+                IDC_CROSS, IDOK, IsWindow, LWA_ALPHA, LoadCursorW, MB_ICONERROR, MB_OK,
+                MB_OKCANCEL, MSG, MessageBoxW, RegisterClassW, SM_CXVIRTUALSCREEN,
+                SM_CYVIRTUALSCREEN, SM_XVIRTUALSCREEN, SM_YVIRTUALSCREEN, SW_SHOW,
+                SetLayeredWindowAttributes, ShowWindow, TranslateMessage, WM_DESTROY, WM_HOTKEY,
+                WM_LBUTTONDOWN, WM_LBUTTONUP, WM_MOUSEMOVE, WM_PAINT, WNDCLASSW, WS_EX_LAYERED,
+                WS_EX_TOOLWINDOW, WS_EX_TOPMOST, WS_POPUP,
             },
         },
     },
@@ -102,6 +106,7 @@ fn select_region() -> Result<Option<Region>, Box<dyn Error>> {
             lpszClassName: OVERLAY_CLASS,
             lpfnWndProc: Some(overlay_proc),
             style: CS_HREDRAW | CS_VREDRAW,
+            hbrBackground: windows::Win32::Graphics::Gdi::HBRUSH(GetStockObject(BLACK_BRUSH).0),
             ..Default::default()
         };
         RegisterClassW(&class);
@@ -130,6 +135,9 @@ fn select_region() -> Result<Option<Region>, Box<dyn Error>> {
         )?;
         use windows::Win32::UI::WindowsAndMessaging::{GWLP_USERDATA, SetWindowLongPtrW};
         let _ = SetWindowLongPtrW(hwnd, GWLP_USERDATA, Box::into_raw(state) as isize);
+        // Global alpha provides an unobtrusive dimmer while retaining normal
+        // desktop visibility during selection.
+        let _ = SetLayeredWindowAttributes(hwnd, COLORREF(0), 145, LWA_ALPHA);
         let _ = ShowWindow(hwnd, SW_SHOW);
         let mut message = MSG::default();
         while GetMessageW(&mut message, None, 0, 0).into() {
