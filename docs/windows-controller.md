@@ -40,6 +40,9 @@ The release executable was started, `Win + Shift + G` opened the topmost
 `QuickGIFlick selection` window, and a drag from `(100,100)` to `(400,300)`
 reached the record confirmation. Recording completed successfully.
 
+The current release was also exercised through capture, Review, Save, and the
+Fast/Balanced/Best quality chooser; the chooser was visible and interactive.
+
 The saved GIF was decoded by the repository's `inspect_gif` example:
 
 | selected size | requested duration | decoded frames | decoded duration |
