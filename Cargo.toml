@@ -7,7 +7,7 @@ description = "A lightweight Windows GIF recorder powered by ScreenDelta."
 
 [dependencies]
 gif = "0.13.3"
-screendelta = { git = "https://github.com/ARTS-Night/ScreenDelta.git", rev = "cd90d06" }
+screendelta = { git = "https://github.com/ARTS-Night/ScreenDelta.git", rev = "1f72ca3" }
 windows = { version = "0.62.2", features = [
     "Win32_Foundation",
     "Win32_Graphics_Gdi",

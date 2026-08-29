@@ -34,6 +34,16 @@ Frames use monotonic timestamps. Unchanged updates extend GIF duration instead
 of appending duplicate images, and fractional centisecond remainder is carried
 forward so dropped or coalesced work does not make playback artificially fast.
 
+## Cursor modes
+
+The release cursor stimulus at 15 FPS for three seconds verified both current
+modes. Default Original (`CursorCapture::Include`) produced 44 Delta updates
+and 46 composited Color cursor updates; Full and Partial GIFs both decoded to
+3.01 seconds. `QUICKGIFFLICK_CURSOR=hidden` produced 36–37 pointer-only
+Unchanged updates with no composites, and both GIFs decoded to 3.00 seconds.
+This preserves timestamp timing in either mode without forwarding a full frame
+for pointer metadata alone.
+
 ## Windows workflow verified
 
 - `Win + Shift + G` invokes virtual-desktop selection and Record confirmation.
@@ -54,9 +64,10 @@ QuickGIFlick's GitHub Actions job runs the same gates on `windows-latest`.
 
 - The available host has one 96-DPI display; mixed-DPI, negative-coordinate,
   and multi-monitor interaction remain unproven.
-- ScreenDelta deliberately treats pointer-only DXGI metadata as Unchanged.
-  Cursor shape composition and QuickGIFlick Original/Standard/Hidden cursor
-  modes are not implemented.
+- ScreenDelta now composites supported DXGI Color cursor shapes for the
+  default Original capture path. `QUICKGIFFLICK_CURSOR=hidden` excludes them;
+  Standard cursor replacement and Monochrome/Masked Color shape support remain
+  unimplemented.
 - Partial GIF encoding is experimental; full-canvas output remains default
   pending compatibility coverage.
 - The tray icon is verified, but its menu selection could not be asserted via

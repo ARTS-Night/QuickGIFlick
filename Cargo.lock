@@ -48,7 +48,7 @@ dependencies = [
 [[package]]
 name = "screendelta"
 version = "0.1.0"
-source = "git+https://github.com/ARTS-Night/ScreenDelta.git?rev=cd90d06#cd90d06d545aaa56b8ae29843219a3cfa8b5424e"
+source = "git+https://github.com/ARTS-Night/ScreenDelta.git?rev=1f72ca3#1f72ca3f302a37e351513592bce5a077e4f728f3"
 dependencies = [
  "windows",
 ]

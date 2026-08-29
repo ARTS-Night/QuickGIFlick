@@ -15,7 +15,8 @@ use std::{
 use gif::{Encoder, Frame, Repeat};
 use recording::Recording;
 use screendelta::{
-    CaptureConfig, CaptureSession, CaptureSource, CaptureUpdate, CpuFrame, FramePacer, monitors,
+    CaptureConfig, CaptureSession, CaptureSource, CaptureUpdate, CpuFrame, CursorCapture,
+    FramePacer, monitors,
 };
 
 const DEFAULT_RECORDING_MEMORY_BYTES: usize = 32 * 1024 * 1024;
@@ -76,7 +77,10 @@ pub(crate) fn capture_recording_until(
     source: CaptureSource,
     stop: Option<&AtomicBool>,
 ) -> Result<Recording, Box<dyn std::error::Error>> {
-    let mut capture = CaptureSession::start(CaptureConfig { source })?;
+    let mut capture = CaptureSession::start(CaptureConfig {
+        source,
+        cursor: cursor_capture(),
+    })?;
     let initial = capture.next_frame()?;
     let capture_origin = initial.timestamp();
     let mut recording = Recording::new(initial.into_readback()?, recording_memory_budget())?;
@@ -126,6 +130,17 @@ fn recording_memory_budget() -> usize {
 
 fn recording_fps() -> u32 {
     recording_fps_from(std::env::var("QUICKGIFFLICK_FPS").ok().as_deref())
+}
+
+fn cursor_capture() -> CursorCapture {
+    cursor_capture_from(std::env::var("QUICKGIFFLICK_CURSOR").ok().as_deref())
+}
+
+fn cursor_capture_from(value: Option<&str>) -> CursorCapture {
+    match value {
+        Some("hidden") | Some("off") => CursorCapture::Exclude,
+        _ => CursorCapture::Include,
+    }
 }
 
 fn recording_fps_from(value: Option<&str>) -> u32 {
@@ -402,6 +417,13 @@ mod tests {
         for value in [None, Some("0"), Some("241"), Some("invalid")] {
             assert_eq!(recording_fps_from(value), 15);
         }
+    }
+
+    #[test]
+    fn cursor_mode_defaults_to_original_and_allows_hidden_capture() {
+        assert_eq!(cursor_capture_from(None), CursorCapture::Include);
+        assert_eq!(cursor_capture_from(Some("hidden")), CursorCapture::Exclude);
+        assert_eq!(cursor_capture_from(Some("off")), CursorCapture::Exclude);
     }
 
     #[test]
