@@ -453,4 +453,33 @@ mod tests {
         assert_eq!(&first.buffer[4..7], &[255, 0, 0]);
         std::fs::remove_file(path).unwrap();
     }
+
+    #[test]
+    fn trim_rejects_empty_or_out_of_bounds_range() {
+        let mut recording = Recording::new(frame(1, 1, [0, 0, 0, 255]), 1024).unwrap();
+        recording.finish(Duration::from_millis(20));
+        let path = std::env::temp_dir().join("QuickGIFlick_invalid_trim.gif");
+        assert!(
+            encode_recording_range(
+                &mut recording,
+                &path,
+                GifMode::Full,
+                GifQuality::Balanced,
+                Duration::from_millis(10),
+                Duration::from_millis(10),
+            )
+            .is_err()
+        );
+        assert!(
+            encode_recording_range(
+                &mut recording,
+                &path,
+                GifMode::Full,
+                GifQuality::Balanced,
+                Duration::ZERO,
+                Duration::from_millis(21),
+            )
+            .is_err()
+        );
+    }
 }
