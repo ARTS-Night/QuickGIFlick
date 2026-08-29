@@ -44,7 +44,9 @@ The in-memory pixel budget defaults to 32 MiB. Payload beyond that budget is
 kept in an automatically removed temporary file so recording memory does not
 grow with duration. Set `QUICKGIFFLICK_RECORDING_MEMORY_MB` only when testing a
 different budget; it is intentionally not a user-facing setting yet. Set
-`QUICKGIFFLICK_SECONDS` for automated capture duration tests.
+`QUICKGIFFLICK_SECONDS` for automated capture duration tests. Set
+`QUICKGIFFLICK_FPS` to a whole value from 1 through 240 (for example 10, 15,
+20, or 30) for controlled capture tests; the default is 15.
 
 The controller also keeps a lightweight notification-area icon. Its compact
 menu exposes Open, Start Capture, and Exit; the hotkey remains available while

@@ -81,7 +81,7 @@ pub(crate) fn capture_recording_until(
     let capture_origin = initial.timestamp();
     let mut recording = Recording::new(initial.into_readback()?, recording_memory_budget())?;
     let recording_started = Instant::now();
-    let mut pacer = FramePacer::new(15)?;
+    let mut pacer = FramePacer::new(recording_fps())?;
     let seconds = std::env::var("QUICKGIFFLICK_SECONDS")
         .ok()
         .and_then(|value| value.parse().ok())
@@ -122,6 +122,17 @@ fn recording_memory_budget() -> usize {
         .and_then(|value| value.parse::<usize>().ok())
         .map(|megabytes| megabytes.saturating_mul(1024 * 1024))
         .unwrap_or(DEFAULT_RECORDING_MEMORY_BYTES)
+}
+
+fn recording_fps() -> u32 {
+    recording_fps_from(std::env::var("QUICKGIFFLICK_FPS").ok().as_deref())
+}
+
+fn recording_fps_from(value: Option<&str>) -> u32 {
+    value
+        .and_then(|value| value.parse::<u32>().ok())
+        .filter(|fps| *fps > 0 && *fps <= 240)
+        .unwrap_or(15)
 }
 
 fn encode_recording(
@@ -381,6 +392,16 @@ mod tests {
         let mut clock = GifClock::default();
         assert_eq!(clock.advance(Duration::from_micros(66_666)), 6);
         assert_eq!(clock.advance(Duration::from_micros(66_667)), 7);
+    }
+
+    #[test]
+    fn recording_fps_accepts_benchmark_rates_and_rejects_invalid_values() {
+        for fps in [10, 15, 20, 30, 240] {
+            assert_eq!(recording_fps_from(Some(&fps.to_string())), fps);
+        }
+        for value in [None, Some("0"), Some("241"), Some("invalid")] {
+            assert_eq!(recording_fps_from(value), 15);
+        }
     }
 
     #[test]
