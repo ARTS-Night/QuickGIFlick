@@ -10,7 +10,7 @@ clone and the Windows CI job build the same capture API.
 
 The native Windows controller registers `Win + Shift + G`. It opens a virtual
 desktop selection overlay, accepts a selected region, and asks for explicit
-Record or Cancel confirmation. Recording runs on a worker and can be stopped
+Original or Hidden cursor choice, then Record or Cancel confirmation. Recording runs on a worker and can be stopped
 with `Win + Shift + G` (or the recording HUD). It uses ScreenDelta `Full` / `Delta` /
 `Unchanged` updates, then opens Review with elapsed time and timeline-update
 count plus a content-aware estimated GIF size. Choose Save or Discard; Save then selects Fast, Balanced, or Best GIF
@@ -39,8 +39,9 @@ the GIF palette quantizer. These presets do not alter capture resolution or
 ScreenDelta's transport policy; see the measured trade-off in
 [`docs/experiments/2026-08-29-quality-presets.md`](docs/experiments/2026-08-29-quality-presets.md).
 
-Color cursor shapes are included by default. Set `QUICKGIFFLICK_CURSOR=hidden`
-to exclude them for an automated capture; this is the current Hidden mode.
+Color cursor shapes are included by default. Selection offers Original or
+Hidden; set `QUICKGIFFLICK_CURSOR=hidden` to use Hidden in an automated
+capture.
 
 After Save, choose **Yes** to copy the resulting GIF as a Windows file-drop
 clipboard item. This is the natural format for pasting a GIF file into apps

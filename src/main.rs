@@ -77,10 +77,15 @@ pub(crate) fn capture_recording_until(
     source: CaptureSource,
     stop: Option<&AtomicBool>,
 ) -> Result<Recording, Box<dyn std::error::Error>> {
-    let mut capture = CaptureSession::start(CaptureConfig {
-        source,
-        cursor: cursor_capture(),
-    })?;
+    capture_recording_with_cursor(source, stop, cursor_capture())
+}
+
+pub(crate) fn capture_recording_with_cursor(
+    source: CaptureSource,
+    stop: Option<&AtomicBool>,
+    cursor: CursorCapture,
+) -> Result<Recording, Box<dyn std::error::Error>> {
+    let mut capture = CaptureSession::start(CaptureConfig { source, cursor })?;
     let initial = capture.next_frame()?;
     let capture_origin = initial.timestamp();
     let mut recording = Recording::new(initial.into_readback()?, recording_memory_budget())?;

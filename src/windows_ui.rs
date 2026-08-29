@@ -14,7 +14,7 @@ use std::{
 };
 
 use crate::recording::Recording;
-use screendelta::{CaptureSource, Region};
+use screendelta::{CaptureSource, CursorCapture, Region};
 use windows::{
     Win32::{
         Foundation::{COLORREF, GlobalFree, HANDLE, HWND, LPARAM, LRESULT, POINT, RECT, WPARAM},
@@ -44,7 +44,7 @@ use windows::{
                 CreateWindowExW, DefWindowProcW, DestroyMenu, DestroyWindow, DispatchMessageW,
                 ES_AUTOHSCROLL, GWLP_USERDATA, GetClientRect, GetCursorPos, GetDlgItem,
                 GetMessageW, GetSystemMetrics, GetWindowLongPtrW, GetWindowTextW, HMENU, IDC_CROSS,
-                IDCANCEL, IDI_APPLICATION, IDOK, IDYES, IsWindow, KillTimer, LWA_ALPHA,
+                IDCANCEL, IDI_APPLICATION, IDNO, IDOK, IDYES, IsWindow, KillTimer, LWA_ALPHA,
                 LoadCursorW, LoadIconW, MB_ICONERROR, MB_OK, MB_OKCANCEL, MB_YESNO, MB_YESNOCANCEL,
                 MF_STRING, MSG, MessageBoxW, PostMessageW, RegisterClassW, SM_CXVIRTUALSCREEN,
                 SM_CYVIRTUALSCREEN, SM_XVIRTUALSCREEN, SM_YVIRTUALSCREEN, SW_SHOW,
@@ -136,6 +136,9 @@ fn message_loop() -> Result<(), Box<dyn Error>> {
                 if let Some(recording) = &active {
                     recording.stop.store(true, Ordering::Relaxed);
                 } else if let Some(region) = select_region()? {
+                    let Some(cursor) = choose_cursor() else {
+                        continue;
+                    };
                     let choice = MessageBoxW(
                         None,
                         w!(
@@ -145,7 +148,7 @@ fn message_loop() -> Result<(), Box<dyn Error>> {
                         MB_OKCANCEL,
                     );
                     if choice == IDOK {
-                        active = Some(start_recording(region)?);
+                        active = Some(start_recording(region, cursor)?);
                     }
                 }
             }
@@ -166,7 +169,10 @@ fn message_loop() -> Result<(), Box<dyn Error>> {
     Ok(())
 }
 
-fn start_recording(region: Region) -> Result<ActiveRecording, Box<dyn Error>> {
+fn start_recording(
+    region: Region,
+    cursor: CursorCapture,
+) -> Result<ActiveRecording, Box<dyn Error>> {
     let stop = Arc::new(AtomicBool::new(false));
     *HUD_STOP
         .get_or_init(|| Mutex::new(None))
@@ -175,9 +181,12 @@ fn start_recording(region: Region) -> Result<ActiveRecording, Box<dyn Error>> {
     let (sender, completed) = mpsc::channel();
     let worker_stop = stop.clone();
     thread::spawn(move || {
-        let result =
-            crate::capture_recording_until(CaptureSource::Region(region), Some(&worker_stop))
-                .map_err(|error| error.to_string());
+        let result = crate::capture_recording_with_cursor(
+            CaptureSource::Region(region),
+            Some(&worker_stop),
+            cursor,
+        )
+        .map_err(|error| error.to_string());
         let _ = sender.send(result);
     });
     let hud = show_recording_hud()?;
@@ -189,6 +198,17 @@ fn start_recording(region: Region) -> Result<ActiveRecording, Box<dyn Error>> {
         completed,
         hud,
     })
+}
+
+fn choose_cursor() -> Option<CursorCapture> {
+    match show_choice(
+        "QuickGIFlick cursor",
+        "Cursor mode:\n\nYes = Original\nNo = Hidden\nCancel = return to selection",
+    ) {
+        IDYES => Some(CursorCapture::Include),
+        IDNO => Some(CursorCapture::Exclude),
+        _ => None,
+    }
 }
 
 fn finish_recording(active: &mut Option<ActiveRecording>) {
