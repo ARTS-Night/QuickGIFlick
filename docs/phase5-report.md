@@ -70,7 +70,8 @@ three-second run.
   native `Open` command; Windows MCP then exposed the QuickGIFlick window.
   `Start Capture` was likewise dispatched through the tray `WM_COMMAND` path
   and opened the full-screen selection window. The overflow menu itself still
-  cannot be enumerated by this host's accessibility tree.
+  cannot be enumerated by this host's accessibility tree. Finally, dispatching
+  the native `Exit` command terminated the release process within 500 ms.
 - GIF file clipboard creation was exercised as a `CF_HDROP` item.
 
 ## Validation
