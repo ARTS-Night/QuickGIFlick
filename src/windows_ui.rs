@@ -39,7 +39,7 @@ use windows::{
             WindowsAndMessaging::{
                 CS_HREDRAW, CS_VREDRAW, CreateWindowExW, DefWindowProcW, DestroyWindow,
                 DispatchMessageW, GWLP_USERDATA, GetClientRect, GetMessageW, GetSystemMetrics,
-                GetWindowLongPtrW, IDC_CROSS, IDCANCEL, IDOK, IDYES, IsWindow, KillTimer,
+                GetWindowLongPtrW, IDC_CROSS, IDCANCEL, IDNO, IDOK, IDYES, IsWindow, KillTimer,
                 LWA_ALPHA, LoadCursorW, MB_ICONERROR, MB_OK, MB_OKCANCEL, MB_YESNO, MB_YESNOCANCEL,
                 MSG, MessageBoxW, RegisterClassW, SM_CXVIRTUALSCREEN, SM_CYVIRTUALSCREEN,
                 SM_XVIRTUALSCREEN, SM_YVIRTUALSCREEN, SW_SHOW, SetLayeredWindowAttributes,
@@ -180,6 +180,7 @@ fn review_recording(recording: &mut Recording) {
     if show_question(&message) != IDYES {
         return;
     }
+    let (start, end) = choose_trim_range(recording.end());
     let quality = choose_quality();
     let output = match crate::output_path() {
         Ok(path) => path,
@@ -192,14 +193,23 @@ fn review_recording(recording: &mut Recording) {
         &output,
         crate::GifMode::Full,
         quality,
-        std::time::Duration::ZERO,
-        recording.end(),
+        start,
+        end,
     ) {
         Ok(_) => offer_copy(&output),
         Err(error) => show_text(
             &format!("GIF encoding failed: {error}"),
             MB_OK | MB_ICONERROR,
         ),
+    }
+}
+
+fn choose_trim_range(end: std::time::Duration) -> (std::time::Duration, std::time::Duration) {
+    let midpoint = end / 2;
+    match show_choice("Trim range:\n\nYes = first half\nNo = last half\nCancel = full recording") {
+        IDYES => (std::time::Duration::ZERO, midpoint),
+        IDNO => (midpoint, end),
+        _ => (std::time::Duration::ZERO, end),
     }
 }
 
