@@ -28,6 +28,7 @@ use windows::{
             Ole::CF_HDROP,
         },
         UI::{
+            HiDpi::{DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2, SetProcessDpiAwarenessContext},
             Input::KeyboardAndMouse::{
                 MOD_NOREPEAT, MOD_SHIFT, MOD_WIN, RegisterHotKey, ReleaseCapture, SetCapture,
                 UnregisterHotKey,
@@ -69,6 +70,10 @@ struct ActiveRecording {
 }
 
 pub(crate) fn run() -> Result<(), Box<dyn Error>> {
+    // ScreenDelta regions use desktop physical pixels; make the overlay use
+    // that same coordinate space even when it crosses monitors with different
+    // scale factors. This must happen before any UI is created.
+    unsafe { SetProcessDpiAwarenessContext(DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2)? };
     unsafe {
         RegisterHotKey(
             None,

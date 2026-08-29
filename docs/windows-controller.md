@@ -8,6 +8,10 @@ desktop using Windows virtual-screen metrics, converts the selected screen
 coordinates into `CaptureSource::Region`, and starts the existing recorder
 only after an explicit confirmation.
 
+The controller sets `DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2` before it
+creates any Win32 window. This keeps the selection overlay and ScreenDelta's
+desktop `Region` in physical pixels rather than DPI-virtualized coordinates.
+
 This separation keeps QuickGIFlick-specific UI out of ScreenDelta and avoids a
 second capture implementation. A selection that does not fit a single DXGI
 output reaches ScreenDelta's explicit `Capture source must fit one active
@@ -43,12 +47,14 @@ file clipboard item; attachment behaviour in individual third-party apps still
 needs app-specific compatibility coverage.
 
 This verifies global-hotkey dispatch, overlay input, non-blocking region capture,
-Stop timing, GIF creation, and GIF timing on an interactive Windows desktop. It does not claim
-multi-monitor, review/trim, tray, clipboard, HUD exclusion, or browser
-compatibility coverage; those require their own completed implementations and
-tests.
+Stop timing, GIF creation, GIF timing, and file clipboard construction on an
+interactive Windows desktop. The available host has a single 96-DPI display,
+so it proves the V2 API initializes and this physical-pixel path works there.
+It does not prove mixed-DPI or negative-coordinate multi-monitor operation,
+Review/Trim, Tray, HUD exclusion in a captured GIF, or third-party clipboard
+compatibility; those require their own completed implementations and tests.
 
-`SetWindowDisplayAffinity(WDA_EXCLUDEFROMCAPTURE)` is reserved for the future
-HUD. Microsoft documents that value as suitable for recording controls on
+The HUD requests `SetWindowDisplayAffinity(WDA_EXCLUDEFROMCAPTURE)` best effort.
+Microsoft documents that value as suitable for recording controls on
 Windows 10 version 2004 and newer, with compatibility behaviour on earlier
 systems: <https://learn.microsoft.com/en-us/windows/win32/api/winuser/nf-winuser-setwindowdisplayaffinity>.
