@@ -44,9 +44,9 @@ use windows::{
                 CreateWindowExW, DefWindowProcW, DestroyMenu, DestroyWindow, DispatchMessageW,
                 ES_AUTOHSCROLL, GWLP_USERDATA, GetClientRect, GetCursorPos, GetDlgItem,
                 GetMessageW, GetSystemMetrics, GetWindowLongPtrW, GetWindowTextW, HMENU, IDC_CROSS,
-                IDCANCEL, IDI_APPLICATION, IDNO, IDOK, IDYES, IsWindow, KillTimer, LWA_ALPHA,
-                LoadCursorW, LoadIconW, MB_ICONERROR, MB_OK, MB_OKCANCEL, MB_YESNO, MB_YESNOCANCEL,
-                MF_STRING, MSG, MessageBoxW, PostMessageW, RegisterClassW, SM_CXVIRTUALSCREEN,
+                IDCANCEL, IDNO, IDOK, IDYES, IsWindow, KillTimer, LWA_ALPHA, LoadCursorW,
+                LoadIconW, MB_ICONERROR, MB_OK, MB_OKCANCEL, MB_YESNO, MB_YESNOCANCEL, MF_STRING,
+                MSG, MessageBoxW, PostMessageW, RegisterClassW, SM_CXVIRTUALSCREEN,
                 SM_CYVIRTUALSCREEN, SM_XVIRTUALSCREEN, SM_YVIRTUALSCREEN, SW_SHOW,
                 SetForegroundWindow, SetLayeredWindowAttributes, SetTimer,
                 SetWindowDisplayAffinity, ShowWindow, TrackPopupMenu, TranslateMessage,
@@ -74,6 +74,12 @@ const TRAY_EXIT: u32 = WM_APP + 4;
 const TRAY_OPEN_ID: usize = 2001;
 const TRAY_START_ID: usize = 2002;
 const TRAY_EXIT_ID: usize = 2003;
+
+fn bundled_icon(
+    instance: windows::Win32::Foundation::HINSTANCE,
+) -> windows::Win32::UI::WindowsAndMessaging::HICON {
+    unsafe { LoadIconW(Some(instance), PCWSTR(1 as *const u16)).unwrap_or_default() }
+}
 const TRIM_START_ID: i32 = 1001;
 const TRIM_END_ID: i32 = 1002;
 const TRIM_SAVE_ID: i32 = 1003;
@@ -296,6 +302,7 @@ fn choose_trim_range(
     unsafe {
         let instance = GetModuleHandleW(None).ok()?;
         let class = WNDCLASSW {
+            hIcon: bundled_icon(instance.into()),
             hInstance: instance.into(),
             lpszClassName: TRIM_CLASS,
             lpfnWndProc: Some(trim_proc),
@@ -493,6 +500,7 @@ fn show_tray() -> Result<HWND, Box<dyn Error>> {
     unsafe {
         let instance = GetModuleHandleW(None)?;
         let class = WNDCLASSW {
+            hIcon: bundled_icon(instance.into()),
             hInstance: instance.into(),
             lpszClassName: TRAY_CLASS,
             lpfnWndProc: Some(tray_proc),
@@ -519,7 +527,7 @@ fn show_tray() -> Result<HWND, Box<dyn Error>> {
             uID: 1,
             uFlags: NIF_MESSAGE | NIF_ICON | NIF_TIP,
             uCallbackMessage: TRAY_CALLBACK,
-            hIcon: LoadIconW(None, IDI_APPLICATION)?,
+            hIcon: bundled_icon(instance.into()),
             ..Default::default()
         };
         let tip = wide("QuickGIFlick");
@@ -589,6 +597,7 @@ fn show_recording_hud() -> Result<HWND, Box<dyn Error>> {
     unsafe {
         let instance = GetModuleHandleW(None)?;
         let class = WNDCLASSW {
+            hIcon: bundled_icon(instance.into()),
             hInstance: instance.into(),
             lpszClassName: HUD_CLASS,
             lpfnWndProc: Some(hud_proc),
@@ -626,6 +635,7 @@ fn select_region() -> Result<Option<Region>, Box<dyn Error>> {
         let instance = GetModuleHandleW(None)?;
         let cursor = LoadCursorW(None, IDC_CROSS)?;
         let class = WNDCLASSW {
+            hIcon: bundled_icon(instance.into()),
             hCursor: cursor,
             hInstance: instance.into(),
             lpszClassName: OVERLAY_CLASS,
