@@ -1,10 +1,16 @@
 # QuickGIFlick
 
+![QuickGIFlick logo](assets/brand/logo.png)
+
 > Select. Record. GIF.
 
 QuickGIFlick is a Windows GIF recorder built on [ScreenDelta](https://github.com/ARTS-Night/ScreenDelta).
 Its Cargo dependency is pinned to the validated ScreenDelta revision so a clean
 clone and the Windows CI job build the same capture API.
+
+Brand artwork lives in [`assets/brand`](assets/brand); workflow/status artwork
+lives in [`assets/status`](assets/status). These are documentation and
+distribution assets; the recorder does not load them at runtime.
 
 ## Current milestone
 
@@ -86,6 +92,26 @@ different budget; it is intentionally not a user-facing setting yet. Set
 The controller also keeps a lightweight notification-area icon. Its compact
 menu exposes Open, Start Capture, and Exit; the hotkey remains available while
 it is resident.
+
+## Where files are saved
+
+Saved GIFs go to `%USERPROFILE%\\Videos\\QuickGIFlick\\`. The directory is
+created when needed, and Review displays the exact path after saving. Temporary
+spill files use the Windows temporary directory only when the memory budget is
+exceeded and are removed after a successful recording. The app does not upload
+recordings.
+
+## Basic operation
+
+1. Press `Win + Shift + G`, or choose **Start Capture** from the tray.
+2. Drag a region; press `F`, `1`, `4`, `9`, `0`, or `V` for an aspect ratio.
+3. Choose cursor mode and confirm **Record**.
+4. Stop with the HUD button or `Win + Shift + G`.
+5. In Review, optionally enter Start/End seconds, choose quality, then **Save**
+   or **Copy**. **Cancel** discards the recording.
+
+Run `cargo run` from PowerShell for a debug build with console diagnostics;
+the release executable uses the Windows GUI subsystem.
 The timeline now supports reconstructing the canvas at an arbitrary timestamp,
 which is the correctness primitive used for Trim when a trim start falls after
 a Delta update. The capture, bounded recording timeline, and encoder are kept
