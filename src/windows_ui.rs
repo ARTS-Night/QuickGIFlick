@@ -35,20 +35,26 @@ use windows::{
                 MOD_NOREPEAT, MOD_SHIFT, MOD_WIN, RegisterHotKey, ReleaseCapture, SetCapture,
                 UnregisterHotKey,
             },
-            Shell::DROPFILES,
+            Shell::{
+                DROPFILES, NIF_ICON, NIF_MESSAGE, NIF_TIP, NIM_ADD, NIM_DELETE, NOTIFYICONDATAW,
+                Shell_NotifyIconW,
+            },
             WindowsAndMessaging::{
-                BS_PUSHBUTTON, CS_HREDRAW, CS_VREDRAW, CreateWindowExW, DefWindowProcW,
-                DestroyWindow, DispatchMessageW, ES_AUTOHSCROLL, GWLP_USERDATA, GetClientRect,
-                GetDlgItem, GetMessageW, GetSystemMetrics, GetWindowLongPtrW, GetWindowTextW,
-                HMENU, IDC_CROSS, IDCANCEL, IDOK, IDYES, IsWindow, KillTimer, LWA_ALPHA,
-                LoadCursorW, MB_ICONERROR, MB_OK, MB_OKCANCEL, MB_YESNO, MB_YESNOCANCEL, MSG,
-                MessageBoxW, RegisterClassW, SM_CXVIRTUALSCREEN, SM_CYVIRTUALSCREEN,
-                SM_XVIRTUALSCREEN, SM_YVIRTUALSCREEN, SW_SHOW, SetLayeredWindowAttributes,
-                SetTimer, SetWindowDisplayAffinity, ShowWindow, TranslateMessage,
-                WDA_EXCLUDEFROMCAPTURE, WINDOW_STYLE, WM_CLOSE, WM_COMMAND, WM_DESTROY, WM_HOTKEY,
-                WM_LBUTTONDOWN, WM_LBUTTONUP, WM_MOUSEMOVE, WM_PAINT, WM_TIMER, WNDCLASSW,
-                WS_BORDER, WS_CAPTION, WS_CHILD, WS_EX_DLGMODALFRAME, WS_EX_LAYERED,
-                WS_EX_TOOLWINDOW, WS_EX_TOPMOST, WS_POPUP, WS_SYSMENU, WS_VISIBLE,
+                AppendMenuW, BS_PUSHBUTTON, CS_HREDRAW, CS_VREDRAW, CreatePopupMenu,
+                CreateWindowExW, DefWindowProcW, DestroyMenu, DestroyWindow, DispatchMessageW,
+                ES_AUTOHSCROLL, GWLP_USERDATA, GetClientRect, GetCursorPos, GetDlgItem,
+                GetMessageW, GetSystemMetrics, GetWindowLongPtrW, GetWindowTextW, HMENU, IDC_CROSS,
+                IDCANCEL, IDI_APPLICATION, IDOK, IDYES, IsWindow, KillTimer, LWA_ALPHA,
+                LoadCursorW, LoadIconW, MB_ICONERROR, MB_OK, MB_OKCANCEL, MB_YESNO, MB_YESNOCANCEL,
+                MF_STRING, MSG, MessageBoxW, PostMessageW, RegisterClassW, SM_CXVIRTUALSCREEN,
+                SM_CYVIRTUALSCREEN, SM_XVIRTUALSCREEN, SM_YVIRTUALSCREEN, SW_SHOW,
+                SetForegroundWindow, SetLayeredWindowAttributes, SetTimer,
+                SetWindowDisplayAffinity, ShowWindow, TrackPopupMenu, TranslateMessage,
+                WDA_EXCLUDEFROMCAPTURE, WINDOW_STYLE, WM_APP, WM_CLOSE, WM_COMMAND, WM_CONTEXTMENU,
+                WM_DESTROY, WM_HOTKEY, WM_LBUTTONDOWN, WM_LBUTTONUP, WM_MOUSEMOVE, WM_PAINT,
+                WM_RBUTTONUP, WM_TIMER, WNDCLASSW, WS_BORDER, WS_CAPTION, WS_CHILD,
+                WS_EX_DLGMODALFRAME, WS_EX_LAYERED, WS_EX_TOOLWINDOW, WS_EX_TOPMOST, WS_POPUP,
+                WS_SYSMENU, WS_VISIBLE,
             },
         },
     },
@@ -60,6 +66,14 @@ const RECORDING_TIMER_ID: usize = 0x5147;
 const OVERLAY_CLASS: PCWSTR = w!("QuickGIFlickSelectionOverlay");
 const HUD_CLASS: PCWSTR = w!("QuickGIFlickRecordingHud");
 const TRIM_CLASS: PCWSTR = w!("QuickGIFlickTrimDialog");
+const TRAY_CLASS: PCWSTR = w!("QuickGIFlickTrayHost");
+const TRAY_CALLBACK: u32 = WM_APP + 1;
+const TRAY_START: u32 = WM_APP + 2;
+const TRAY_OPEN: u32 = WM_APP + 3;
+const TRAY_EXIT: u32 = WM_APP + 4;
+const TRAY_OPEN_ID: usize = 2001;
+const TRAY_START_ID: usize = 2002;
+const TRAY_EXIT_ID: usize = 2003;
 const TRIM_START_ID: i32 = 1001;
 const TRIM_END_ID: i32 = 1002;
 const TRIM_SAVE_ID: i32 = 1003;
@@ -108,13 +122,16 @@ pub(crate) fn run() -> Result<(), Box<dyn Error>> {
 
 fn message_loop() -> Result<(), Box<dyn Error>> {
     let mut active = None;
+    let tray = show_tray()?;
     unsafe {
         let mut message = MSG::default();
         while GetMessageW(&mut message, None, 0, 0).into() {
             if message.message == WM_TIMER {
                 finish_recording(&mut active);
             }
-            if message.message == WM_HOTKEY && message.wParam.0 == HOTKEY_ID as usize {
+            if (message.message == WM_HOTKEY && message.wParam.0 == HOTKEY_ID as usize)
+                || message.message == TRAY_START
+            {
                 if let Some(recording) = &active {
                     recording.stop.store(true, Ordering::Relaxed);
                 } else if let Some(region) = select_region()? {
@@ -131,9 +148,19 @@ fn message_loop() -> Result<(), Box<dyn Error>> {
                     }
                 }
             }
+            if message.message == TRAY_OPEN {
+                show_text(
+                    "QuickGIFlick is ready. Choose Start Capture from the tray menu or press Win+Shift+G.",
+                    MB_OK,
+                );
+            }
+            if message.message == TRAY_EXIT {
+                break;
+            }
             let _ = TranslateMessage(&message);
             DispatchMessageW(&message);
         }
+        remove_tray(tray);
     }
     Ok(())
 }
@@ -428,6 +455,102 @@ fn copy_file_to_clipboard(path: &std::path::Path) -> Result<(), Box<dyn Error>> 
         CloseClipboard()?;
     }
     Ok(())
+}
+
+fn show_tray() -> Result<HWND, Box<dyn Error>> {
+    unsafe {
+        let instance = GetModuleHandleW(None)?;
+        let class = WNDCLASSW {
+            hInstance: instance.into(),
+            lpszClassName: TRAY_CLASS,
+            lpfnWndProc: Some(tray_proc),
+            ..Default::default()
+        };
+        RegisterClassW(&class);
+        let hwnd = CreateWindowExW(
+            WS_EX_TOOLWINDOW,
+            TRAY_CLASS,
+            w!("QuickGIFlick tray"),
+            WS_POPUP,
+            0,
+            0,
+            0,
+            0,
+            None,
+            None,
+            Some(instance.into()),
+            None,
+        )?;
+        let mut data = NOTIFYICONDATAW {
+            cbSize: std::mem::size_of::<NOTIFYICONDATAW>() as u32,
+            hWnd: hwnd,
+            uID: 1,
+            uFlags: NIF_MESSAGE | NIF_ICON | NIF_TIP,
+            uCallbackMessage: TRAY_CALLBACK,
+            hIcon: LoadIconW(None, IDI_APPLICATION)?,
+            ..Default::default()
+        };
+        let tip = wide("QuickGIFlick");
+        data.szTip[..tip.len()].copy_from_slice(&tip);
+        if !Shell_NotifyIconW(NIM_ADD, &data).as_bool() {
+            let _ = DestroyWindow(hwnd);
+            return Err("could not add QuickGIFlick tray icon".into());
+        }
+        Ok(hwnd)
+    }
+}
+
+unsafe fn remove_tray(hwnd: HWND) {
+    let data = NOTIFYICONDATAW {
+        cbSize: std::mem::size_of::<NOTIFYICONDATAW>() as u32,
+        hWnd: hwnd,
+        uID: 1,
+        ..Default::default()
+    };
+    let _ = unsafe { Shell_NotifyIconW(NIM_DELETE, &data) };
+    let _ = unsafe { DestroyWindow(hwnd) };
+}
+
+unsafe extern "system" fn tray_proc(
+    hwnd: HWND,
+    message: u32,
+    wparam: WPARAM,
+    lparam: LPARAM,
+) -> LRESULT {
+    match message {
+        TRAY_CALLBACK
+            if matches!(
+                lparam.0 as u32,
+                WM_RBUTTONUP | WM_LBUTTONUP | WM_CONTEXTMENU
+            ) =>
+        {
+            let Ok(menu) = (unsafe { CreatePopupMenu() }) else {
+                return LRESULT(0);
+            };
+            let _ = unsafe { AppendMenuW(menu, MF_STRING, TRAY_OPEN_ID, w!("Open")) };
+            let _ = unsafe { AppendMenuW(menu, MF_STRING, TRAY_START_ID, w!("Start Capture")) };
+            let _ = unsafe { AppendMenuW(menu, MF_STRING, TRAY_EXIT_ID, w!("Exit")) };
+            let mut point = POINT::default();
+            let _ = unsafe { GetCursorPos(&mut point) };
+            let _ = unsafe { SetForegroundWindow(hwnd) };
+            let _ = unsafe {
+                TrackPopupMenu(menu, Default::default(), point.x, point.y, None, hwnd, None)
+            };
+            let _ = unsafe { DestroyMenu(menu) };
+            LRESULT(0)
+        }
+        WM_COMMAND => {
+            let target = match wparam.0 & 0xffff {
+                TRAY_OPEN_ID => TRAY_OPEN,
+                TRAY_START_ID => TRAY_START,
+                TRAY_EXIT_ID => TRAY_EXIT,
+                _ => return unsafe { DefWindowProcW(hwnd, message, wparam, lparam) },
+            };
+            let _ = unsafe { PostMessageW(Some(hwnd), target, WPARAM(0), LPARAM(0)) };
+            LRESULT(0)
+        }
+        _ => unsafe { DefWindowProcW(hwnd, message, wparam, lparam) },
+    }
 }
 
 fn show_recording_hud() -> Result<HWND, Box<dyn Error>> {

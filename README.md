@@ -43,8 +43,9 @@ grow with duration. Set `QUICKGIFFLICK_RECORDING_MEMORY_MB` only when testing a
 different budget; it is intentionally not a user-facing setting yet. Set
 `QUICKGIFFLICK_SECONDS` for automated capture duration tests.
 
-The controller is intentionally small while the capture path is being measured:
-tray support is the next product surface.
+The controller also keeps a lightweight notification-area icon. Its compact
+menu exposes Open, Start Capture, and Exit; the hotkey remains available while
+it is resident.
 The timeline now supports reconstructing the canvas at an arbitrary timestamp,
 which is the correctness primitive used for Trim when a trim start falls after
 a Delta update. The capture, bounded recording timeline, and encoder are kept
