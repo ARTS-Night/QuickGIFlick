@@ -9,6 +9,7 @@ use std::{
     fs::File,
     path::PathBuf,
     sync::atomic::{AtomicBool, Ordering},
+    thread,
     time::{Duration, Instant},
 };
 
@@ -20,6 +21,7 @@ use screendelta::{
 };
 
 const DEFAULT_RECORDING_MEMORY_BYTES: usize = 32 * 1024 * 1024;
+const CAPTURE_STARTUP_SETTLE: Duration = Duration::from_millis(150);
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     if std::env::var_os("QUICKGIFFLICK_BENCH").is_none() {
@@ -86,18 +88,20 @@ pub(crate) fn capture_recording_with_cursor(
     cursor: CursorCapture,
 ) -> Result<Recording, Box<dyn std::error::Error>> {
     let mut capture = CaptureSession::start(CaptureConfig { source, cursor })?;
+    // Selection and confirmation windows have just disappeared. Let DWM
+    // present the desktop before treating the first DXGI image as the canvas.
+    thread::sleep(CAPTURE_STARTUP_SETTLE);
     let initial = capture.next_frame()?;
     let capture_origin = initial.timestamp();
     let mut recording = Recording::new(initial.into_readback()?, recording_memory_budget())?;
     let recording_started = Instant::now();
     let mut pacer = FramePacer::new(recording_fps())?;
-    let seconds = std::env::var("QUICKGIFFLICK_SECONDS")
-        .ok()
-        .and_then(|value| value.parse().ok())
-        .unwrap_or(3);
-    let deadline = recording_started + Duration::from_secs(seconds);
+    let deadline = recording_seconds_limit(stop.is_some())
+        .map(|seconds| recording_started + Duration::from_secs(seconds));
 
-    while Instant::now() < deadline && !stop.is_some_and(|flag| flag.load(Ordering::Relaxed)) {
+    while deadline.is_none_or(|limit| Instant::now() < limit)
+        && !stop.is_some_and(|flag| flag.load(Ordering::Relaxed))
+    {
         pacer.wait();
         match capture.try_next_update(Duration::ZERO)? {
             CaptureUpdate::Full(frame) => {
@@ -123,6 +127,19 @@ pub(crate) fn capture_recording_with_cursor(
         capture.stats(),
     );
     Ok(recording)
+}
+
+fn recording_seconds_limit(interactive: bool) -> Option<u64> {
+    recording_seconds_limit_from(
+        std::env::var("QUICKGIFFLICK_SECONDS").ok().as_deref(),
+        interactive,
+    )
+}
+
+fn recording_seconds_limit_from(value: Option<&str>, interactive: bool) -> Option<u64> {
+    value
+        .and_then(|seconds| seconds.parse().ok())
+        .or_else(|| (!interactive).then_some(3))
 }
 
 fn recording_memory_budget() -> usize {
@@ -423,6 +440,13 @@ mod tests {
         for value in [None, Some("0"), Some("241"), Some("invalid")] {
             assert_eq!(recording_fps_from(value), 15);
         }
+    }
+
+    #[test]
+    fn interactive_recording_has_no_default_time_limit() {
+        assert_eq!(recording_seconds_limit_from(None, true), None);
+        assert_eq!(recording_seconds_limit_from(None, false), Some(3));
+        assert_eq!(recording_seconds_limit_from(Some("60"), true), Some(60));
     }
 
     #[test]

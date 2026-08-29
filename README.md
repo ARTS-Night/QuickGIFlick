@@ -85,7 +85,8 @@ The in-memory pixel budget defaults to 32 MiB. Payload beyond that budget is
 kept in an automatically removed temporary file so recording memory does not
 grow with duration. Set `QUICKGIFFLICK_RECORDING_MEMORY_MB` only when testing a
 different budget; it is intentionally not a user-facing setting yet. Set
-`QUICKGIFFLICK_SECONDS` for automated capture duration tests. Set
+`QUICKGIFFLICK_SECONDS` only to impose a duration limit for automated capture
+tests; interactive recording has no default time limit. Set
 `QUICKGIFFLICK_FPS` to a whole value from 1 through 240 (for example 10, 15,
 20, or 30) for controlled capture tests; the default is 15.
 
@@ -106,7 +107,7 @@ recordings.
 1. Press `Win + Shift + G`, or choose **Start Capture** from the tray.
 2. Drag a region; press `F`, `1`, `4`, `9`, `0`, or `V` for an aspect ratio.
 3. Choose cursor mode and confirm **Record**.
-4. Stop with the HUD button or `Win + Shift + G`.
+4. Recording continues until you stop with the HUD button or `Win + Shift + G`.
 5. In Review, optionally enter Start/End seconds, choose quality, then **Save**
    or **Copy**. **Cancel** discards the recording.
 

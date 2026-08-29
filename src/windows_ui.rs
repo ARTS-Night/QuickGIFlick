@@ -149,7 +149,7 @@ fn message_loop() -> Result<(), Box<dyn Error>> {
                     let choice = MessageBoxW(
                         None,
                         w!(
-                            "Record this selected area now? Cancel returns to the hotkey. Recording length is controlled by QUICKGIFFLICK_SECONDS (default: 3 seconds)."
+                            "Record this selected area now? Cancel returns to the hotkey. Recording continues until you stop it; QUICKGIFFLICK_SECONDS is only an optional development limit."
                         ),
                         w!("QuickGIFlick"),
                         MB_OKCANCEL,
