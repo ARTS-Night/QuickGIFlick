@@ -6,7 +6,7 @@ use std::{
     time::Duration,
 };
 
-use screendelta::{CpuFrame, DeltaRegion, PixelFormat};
+use screendelta::{CpuFrame, DeltaRegion, PixelFormat, Region};
 
 static NEXT_SPILL_ID: AtomicU64 = AtomicU64::new(0);
 
@@ -48,6 +48,7 @@ pub struct Recording {
     memory_budget: usize,
     resident_payload_bytes: usize,
     spilled_payload_bytes: usize,
+    store_time: Duration,
     spill_file: Option<File>,
     spill_path: Option<PathBuf>,
 }
@@ -67,6 +68,7 @@ impl Recording {
             memory_budget,
             resident_payload_bytes: 0,
             spilled_payload_bytes: 0,
+            store_time: Duration::ZERO,
             spill_file: None,
             spill_path: None,
         };
@@ -119,6 +121,15 @@ impl Recording {
         }
     }
 
+    pub fn update_bounds(&self, index: usize) -> Region {
+        match &self.updates[index] {
+            Update::Full { frame, .. } => Region::new(0, 0, frame.width, frame.height)
+                .expect("stored frames have nonzero dimensions"),
+            Update::Delta { regions, .. } => union_regions(regions)
+                .expect("ScreenDelta DeltaFrame has at least one nonempty region"),
+        }
+    }
+
     pub fn apply_update(
         &mut self,
         index: usize,
@@ -155,7 +166,12 @@ impl Recording {
         self.spilled_payload_bytes
     }
 
+    pub fn store_time(&self) -> Duration {
+        self.store_time
+    }
+
     fn store_frame(&mut self, frame: CpuFrame) -> std::io::Result<StoredFrame> {
+        let started = std::time::Instant::now();
         let CpuFrame {
             width,
             height,
@@ -174,6 +190,7 @@ impl Recording {
             self.spilled_payload_bytes += len;
             Payload::Spill { offset, len }
         };
+        self.store_time += started.elapsed();
         Ok(StoredFrame {
             width,
             height,
@@ -224,6 +241,22 @@ impl Recording {
         }
         Ok(self.spill_file.as_mut().expect("spill file was created"))
     }
+}
+
+fn union_regions(regions: &[StoredRegion]) -> Option<Region> {
+    let first = regions.first()?.region;
+    let (mut left, mut top) = (first.x, first.y);
+    let (mut right, mut bottom) = (
+        first.x + first.size.width as i32,
+        first.y + first.size.height as i32,
+    );
+    for region in &regions[1..] {
+        left = left.min(region.region.x);
+        top = top.min(region.region.y);
+        right = right.max(region.region.x + region.region.size.width as i32);
+        bottom = bottom.max(region.region.y + region.region.size.height as i32);
+    }
+    Region::new(left, top, (right - left) as u32, (bottom - top) as u32)
 }
 
 impl Drop for Recording {
