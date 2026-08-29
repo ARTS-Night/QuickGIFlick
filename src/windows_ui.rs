@@ -81,6 +81,7 @@ const TRIM_FULL_ID: i32 = 1004;
 const TRIM_CANCEL_ID: i32 = 1005;
 static SELECTION: OnceLock<Mutex<Option<Region>>> = OnceLock::new();
 static HUD_STOP: OnceLock<Mutex<Option<Arc<AtomicBool>>>> = OnceLock::new();
+static HUD_STARTED: OnceLock<Mutex<Option<std::time::Instant>>> = OnceLock::new();
 static TRIM_DIALOG: OnceLock<Mutex<TrimDialogState>> = OnceLock::new();
 
 struct OverlayState {
@@ -174,6 +175,10 @@ fn start_recording(
     cursor: CursorCapture,
 ) -> Result<ActiveRecording, Box<dyn Error>> {
     let stop = Arc::new(AtomicBool::new(false));
+    *HUD_STARTED
+        .get_or_init(|| Mutex::new(None))
+        .lock()
+        .expect("HUD start lock") = Some(std::time::Instant::now());
     *HUD_STOP
         .get_or_init(|| Mutex::new(None))
         .lock()
@@ -215,6 +220,9 @@ fn finish_recording(active: &mut Option<ActiveRecording>) {
     let Some(recording) = active.as_ref() else {
         return;
     };
+    unsafe {
+        let _ = InvalidateRect(Some(recording.hud), None, false);
+    }
     let Ok(result) = recording.completed.try_recv() else {
         return;
     };
@@ -226,6 +234,10 @@ fn finish_recording(active: &mut Option<ActiveRecording>) {
         .get_or_init(|| Mutex::new(None))
         .lock()
         .expect("HUD stop lock") = None;
+    *HUD_STARTED
+        .get_or_init(|| Mutex::new(None))
+        .lock()
+        .expect("HUD start lock") = None;
     *active = None;
     match result {
         Ok(mut recording) => review_recording(&mut recording),
@@ -863,9 +875,18 @@ unsafe extern "system" fn hud_proc(
             let dc = unsafe { BeginPaint(hwnd, &mut paint) };
             let mut rect = RECT::default();
             let _ = unsafe { GetClientRect(hwnd, &mut rect) };
-            let mut text: Vec<u16> = "● REC  Click or Win+Shift+G to stop"
-                .encode_utf16()
-                .collect();
+            let elapsed = HUD_STARTED
+                .get_or_init(|| Mutex::new(None))
+                .lock()
+                .expect("HUD start lock")
+                .map(|started| started.elapsed())
+                .unwrap_or_default();
+            let mut text: Vec<u16> = format!(
+                "● REC {}  Click or Win+Shift+G to stop",
+                recording_clock_text(elapsed)
+            )
+            .encode_utf16()
+            .collect();
             let _ = unsafe {
                 DrawTextW(
                     dc,
@@ -917,6 +938,14 @@ fn point_from_lparam(value: LPARAM) -> POINT {
         x: (value.0 as u32 & 0xffff) as i16 as i32,
         y: ((value.0 as u32 >> 16) & 0xffff) as i16 as i32,
     }
+}
+
+fn recording_clock_text(elapsed: std::time::Duration) -> String {
+    format!(
+        "{:02}:{:02}",
+        elapsed.as_secs() / 60,
+        elapsed.as_secs() % 60
+    )
 }
 
 fn constrain_point(start: POINT, raw: POINT, aspect: Option<(i32, i32)>) -> POINT {
@@ -992,6 +1021,18 @@ mod tests {
         assert_eq!(
             constrain_point(start, raw, Some((16, 9))),
             POINT { x: 210, y: 122 }
+        );
+    }
+
+    #[test]
+    fn recording_clock_uses_minutes_and_seconds() {
+        assert_eq!(
+            recording_clock_text(std::time::Duration::from_secs(8)),
+            "00:08"
+        );
+        assert_eq!(
+            recording_clock_text(std::time::Duration::from_secs(125)),
+            "02:05"
         );
     }
 }

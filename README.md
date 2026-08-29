@@ -15,6 +15,8 @@ with `Win + Shift + G` (or the recording HUD). It uses ScreenDelta `Full` / `Del
 `Unchanged` updates, then opens Review with elapsed time and timeline-update
 count plus a content-aware estimated GIF size. Choose Save or Discard; Save then selects Fast, Balanced, or Best GIF
 quality and writes `%USERPROFILE%\\Videos\\QuickGIFlick\\QuickGIFlick_YYYY-MM-DD_HH-MM-SS.gif`.
+The recording HUD shows `REC mm:ss` and is excluded from supported Windows
+capture paths on a best-effort basis.
 Before quality selection, Review provides Start and End fields in seconds,
 plus Full range and Cancel. The encoder reconstructs the canvas at the chosen
 start timestamp.
