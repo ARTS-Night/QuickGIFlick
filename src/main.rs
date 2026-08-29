@@ -286,7 +286,7 @@ mod tests {
         let mut options = gif::DecodeOptions::new();
         options.set_color_output(gif::ColorOutput::RGBA);
         let mut decoder = options.read_info(File::open(&path).unwrap()).unwrap();
-        let mut canvas = vec![0; 2 * 2 * 4];
+        let mut canvas = [0; 2 * 2 * 4];
         while let Some(frame) = decoder.read_next_frame().unwrap() {
             for row in 0..frame.height as usize {
                 let dst = ((frame.top as usize + row) * 2 + frame.left as usize) * 4;
