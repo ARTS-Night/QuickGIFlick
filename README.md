@@ -25,6 +25,9 @@ capturing an invalid region when a selection crosses monitor boundaries.
 cargo run --release
 ```
 
+Release builds use the Windows GUI subsystem and do not open a console window.
+Use the normal debug build for console diagnostics.
+
 For repeatable benchmark capture rather than the UI, use
 `$env:QUICKGIFFLICK_BENCH=1` and set `QUICKGIFFLICK_SECONDS`.
 
