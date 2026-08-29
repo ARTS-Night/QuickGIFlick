@@ -1,10 +1,12 @@
 mod recording;
 mod timeline;
+#[cfg(windows)]
+mod windows_ui;
 
 use std::{
     fs::File,
     path::PathBuf,
-    time::{Duration, Instant, SystemTime, UNIX_EPOCH},
+    time::{Duration, Instant},
 };
 
 use gif::{Encoder, Frame, Repeat};
@@ -17,13 +19,25 @@ use timeline::Canvas;
 const DEFAULT_RECORDING_MEMORY_BYTES: usize = 32 * 1024 * 1024;
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
+    if std::env::var_os("QUICKGIFFLICK_BENCH").is_none() {
+        #[cfg(windows)]
+        return windows_ui::run();
+        #[cfg(not(windows))]
+        return Err("QuickGIFlick's interactive recorder is Windows-only".into());
+    }
+    run_recording(default_source()?).map(|_| ())
+}
+
+fn default_source() -> Result<CaptureSource, Box<dyn std::error::Error>> {
     let monitor = monitors()?
         .into_iter()
         .next()
         .ok_or("No monitor available")?;
-    let mut capture = CaptureSession::start(CaptureConfig {
-        source: CaptureSource::Monitor(monitor.id),
-    })?;
+    Ok(CaptureSource::Monitor(monitor.id))
+}
+
+pub(crate) fn run_recording(source: CaptureSource) -> Result<PathBuf, Box<dyn std::error::Error>> {
+    let mut capture = CaptureSession::start(CaptureConfig { source })?;
     let initial = capture.next_frame()?;
     let capture_origin = initial.timestamp();
     let mut recording = Recording::new(initial.into_readback()?, recording_memory_budget())?;
@@ -76,7 +90,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         encode.frames,
     );
     println!("Saved {}", output.display());
-    Ok(())
+    Ok(output)
 }
 
 fn recording_memory_budget() -> usize {
@@ -235,7 +249,19 @@ fn output_path() -> Result<PathBuf, Box<dyn std::error::Error>> {
     let dir = std::env::var_os("USERPROFILE").ok_or("USERPROFILE is not set")?;
     let dir = PathBuf::from(dir).join("Videos").join("QuickGIFlick");
     std::fs::create_dir_all(&dir)?;
-    let stamp = SystemTime::now().duration_since(UNIX_EPOCH)?.as_secs();
+    #[cfg(windows)]
+    let stamp = unsafe {
+        let time = windows::Win32::System::SystemInformation::GetLocalTime();
+        format!(
+            "{:04}-{:02}-{:02}_{:02}-{:02}-{:02}",
+            time.wYear, time.wMonth, time.wDay, time.wHour, time.wMinute, time.wSecond
+        )
+    };
+    #[cfg(not(windows))]
+    let stamp = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)?
+        .as_secs()
+        .to_string();
     Ok(dir.join(format!("QuickGIFlick_{stamp}.gif")))
 }
 

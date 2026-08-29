@@ -26,6 +26,7 @@ $rows = foreach ($name in $Scenario) {
         $recorderInfo.UseShellExecute = $false
         $recorderInfo.RedirectStandardOutput = $true
         $recorderInfo.RedirectStandardError = $true
+        $recorderInfo.Environment['QUICKGIFFLICK_BENCH'] = '1'
         $recorderInfo.Environment['QUICKGIFFLICK_SECONDS'] = "$Seconds"
         if ($mode -eq 'partial') { $recorderInfo.Environment['QUICKGIFFLICK_GIF_MODE'] = 'partial' }
         $watch = [Diagnostics.Stopwatch]::StartNew()
