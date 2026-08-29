@@ -61,6 +61,9 @@ The recorder requires an interactive Windows desktop because it performs real
 DXGI capture. `cargo run --release --example inspect_gif -- <path>` verifies a
 saved GIF's decodability, frame count, and total GIF delay.
 
+Measured transport, recording, and Windows-controller evidence is consolidated
+in [`docs/phase5-report.md`](docs/phase5-report.md).
+
 For controlled encoder experiments only, `QUICKGIFFLICK_GIF_MODE=partial`
 uses one bounding GIF rectangle per Delta update. It is not the default until
 compatibility testing is complete; see
