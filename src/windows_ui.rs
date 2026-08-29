@@ -37,16 +37,18 @@ use windows::{
             },
             Shell::DROPFILES,
             WindowsAndMessaging::{
-                CS_HREDRAW, CS_VREDRAW, CreateWindowExW, DefWindowProcW, DestroyWindow,
-                DispatchMessageW, GWLP_USERDATA, GetClientRect, GetMessageW, GetSystemMetrics,
-                GetWindowLongPtrW, IDC_CROSS, IDCANCEL, IDNO, IDOK, IDYES, IsWindow, KillTimer,
-                LWA_ALPHA, LoadCursorW, MB_ICONERROR, MB_OK, MB_OKCANCEL, MB_YESNO, MB_YESNOCANCEL,
-                MSG, MessageBoxW, RegisterClassW, SM_CXVIRTUALSCREEN, SM_CYVIRTUALSCREEN,
+                BS_PUSHBUTTON, CS_HREDRAW, CS_VREDRAW, CreateWindowExW, DefWindowProcW,
+                DestroyWindow, DispatchMessageW, ES_AUTOHSCROLL, GWLP_USERDATA, GetClientRect,
+                GetDlgItem, GetMessageW, GetSystemMetrics, GetWindowLongPtrW, GetWindowTextW,
+                HMENU, IDC_CROSS, IDCANCEL, IDOK, IDYES, IsWindow, KillTimer, LWA_ALPHA,
+                LoadCursorW, MB_ICONERROR, MB_OK, MB_OKCANCEL, MB_YESNO, MB_YESNOCANCEL, MSG,
+                MessageBoxW, RegisterClassW, SM_CXVIRTUALSCREEN, SM_CYVIRTUALSCREEN,
                 SM_XVIRTUALSCREEN, SM_YVIRTUALSCREEN, SW_SHOW, SetLayeredWindowAttributes,
                 SetTimer, SetWindowDisplayAffinity, ShowWindow, TranslateMessage,
-                WDA_EXCLUDEFROMCAPTURE, WM_DESTROY, WM_HOTKEY, WM_LBUTTONDOWN, WM_LBUTTONUP,
-                WM_MOUSEMOVE, WM_PAINT, WM_TIMER, WNDCLASSW, WS_EX_LAYERED, WS_EX_TOOLWINDOW,
-                WS_EX_TOPMOST, WS_POPUP,
+                WDA_EXCLUDEFROMCAPTURE, WINDOW_STYLE, WM_CLOSE, WM_COMMAND, WM_DESTROY, WM_HOTKEY,
+                WM_LBUTTONDOWN, WM_LBUTTONUP, WM_MOUSEMOVE, WM_PAINT, WM_TIMER, WNDCLASSW,
+                WS_BORDER, WS_CAPTION, WS_CHILD, WS_EX_DLGMODALFRAME, WS_EX_LAYERED,
+                WS_EX_TOOLWINDOW, WS_EX_TOPMOST, WS_POPUP, WS_SYSMENU, WS_VISIBLE,
             },
         },
     },
@@ -57,8 +59,15 @@ const HOTKEY_ID: i32 = 0x5147;
 const RECORDING_TIMER_ID: usize = 0x5147;
 const OVERLAY_CLASS: PCWSTR = w!("QuickGIFlickSelectionOverlay");
 const HUD_CLASS: PCWSTR = w!("QuickGIFlickRecordingHud");
+const TRIM_CLASS: PCWSTR = w!("QuickGIFlickTrimDialog");
+const TRIM_START_ID: i32 = 1001;
+const TRIM_END_ID: i32 = 1002;
+const TRIM_SAVE_ID: i32 = 1003;
+const TRIM_FULL_ID: i32 = 1004;
+const TRIM_CANCEL_ID: i32 = 1005;
 static SELECTION: OnceLock<Mutex<Option<Region>>> = OnceLock::new();
 static HUD_STOP: OnceLock<Mutex<Option<Arc<AtomicBool>>>> = OnceLock::new();
+static TRIM_DIALOG: OnceLock<Mutex<TrimDialogState>> = OnceLock::new();
 
 struct OverlayState {
     origin: POINT,
@@ -70,6 +79,11 @@ struct ActiveRecording {
     stop: Arc<AtomicBool>,
     completed: Receiver<Result<Recording, String>>,
     hud: HWND,
+}
+
+struct TrimDialogState {
+    recording_end: std::time::Duration,
+    result: Option<Option<(std::time::Duration, std::time::Duration)>>,
 }
 
 pub(crate) fn run() -> Result<(), Box<dyn Error>> {
@@ -180,7 +194,9 @@ fn review_recording(recording: &mut Recording) {
     if show_question(&message) != IDYES {
         return;
     }
-    let (start, end) = choose_trim_range(recording.end());
+    let Some((start, end)) = choose_trim_range(recording.end()) else {
+        return;
+    };
     let quality = choose_quality();
     let output = match crate::output_path() {
         Ok(path) => path,
@@ -204,16 +220,153 @@ fn review_recording(recording: &mut Recording) {
     }
 }
 
-fn choose_trim_range(end: std::time::Duration) -> (std::time::Duration, std::time::Duration) {
-    let midpoint = end / 2;
-    match show_choice(
-        "QuickGIFlick trim",
-        "Trim range:\n\nYes = first half\nNo = last half\nCancel = full recording",
-    ) {
-        IDYES => (std::time::Duration::ZERO, midpoint),
-        IDNO => (midpoint, end),
-        _ => (std::time::Duration::ZERO, end),
+fn choose_trim_range(
+    end: std::time::Duration,
+) -> Option<(std::time::Duration, std::time::Duration)> {
+    let state = TRIM_DIALOG.get_or_init(|| {
+        Mutex::new(TrimDialogState {
+            recording_end: end,
+            result: None,
+        })
+    });
+    {
+        let mut state = state.lock().expect("trim dialog lock");
+        state.recording_end = end;
+        state.result = None;
     }
+    unsafe {
+        let instance = GetModuleHandleW(None).ok()?;
+        let class = WNDCLASSW {
+            hInstance: instance.into(),
+            lpszClassName: TRIM_CLASS,
+            lpfnWndProc: Some(trim_proc),
+            hbrBackground: windows::Win32::Graphics::Gdi::HBRUSH(GetStockObject(BLACK_BRUSH).0),
+            ..Default::default()
+        };
+        RegisterClassW(&class);
+        let hwnd = CreateWindowExW(
+            WS_EX_TOPMOST | WS_EX_DLGMODALFRAME,
+            TRIM_CLASS,
+            w!("QuickGIFlick trim"),
+            WS_POPUP | WS_CAPTION | WS_SYSMENU,
+            360,
+            220,
+            360,
+            205,
+            None,
+            None,
+            Some(instance.into()),
+            None,
+        )
+        .ok()?;
+        let start_text = wide("0.00");
+        let end_text = wide(&format!("{:.2}", end.as_secs_f64()));
+        let _ = CreateWindowExW(
+            Default::default(),
+            w!("STATIC"),
+            w!("Start (seconds)"),
+            WS_CHILD | WS_VISIBLE,
+            18,
+            20,
+            140,
+            22,
+            Some(hwnd),
+            None,
+            Some(instance.into()),
+            None,
+        );
+        let _ = CreateWindowExW(
+            Default::default(),
+            w!("EDIT"),
+            PCWSTR(start_text.as_ptr()),
+            WS_CHILD | WS_VISIBLE | WS_BORDER | WINDOW_STYLE(ES_AUTOHSCROLL as u32),
+            165,
+            18,
+            160,
+            25,
+            Some(hwnd),
+            Some(HMENU(TRIM_START_ID as usize as *mut _)),
+            Some(instance.into()),
+            None,
+        );
+        let _ = CreateWindowExW(
+            Default::default(),
+            w!("STATIC"),
+            w!("End (seconds)"),
+            WS_CHILD | WS_VISIBLE,
+            18,
+            57,
+            140,
+            22,
+            Some(hwnd),
+            None,
+            Some(instance.into()),
+            None,
+        );
+        let _ = CreateWindowExW(
+            Default::default(),
+            w!("EDIT"),
+            PCWSTR(end_text.as_ptr()),
+            WS_CHILD | WS_VISIBLE | WS_BORDER | WINDOW_STYLE(ES_AUTOHSCROLL as u32),
+            165,
+            55,
+            160,
+            25,
+            Some(hwnd),
+            Some(HMENU(TRIM_END_ID as usize as *mut _)),
+            Some(instance.into()),
+            None,
+        );
+        let _ = CreateWindowExW(
+            Default::default(),
+            w!("STATIC"),
+            w!("Use 0 through the recording duration. Save encodes only this range."),
+            WS_CHILD | WS_VISIBLE,
+            18,
+            94,
+            320,
+            25,
+            Some(hwnd),
+            None,
+            Some(instance.into()),
+            None,
+        );
+        for (label, id, x, width) in [
+            (w!("Save range"), TRIM_SAVE_ID, 18, 102),
+            (w!("Full range"), TRIM_FULL_ID, 128, 102),
+            (w!("Cancel"), TRIM_CANCEL_ID, 238, 87),
+        ] {
+            let _ = CreateWindowExW(
+                Default::default(),
+                w!("BUTTON"),
+                label,
+                WS_CHILD | WS_VISIBLE | WINDOW_STYLE(BS_PUSHBUTTON as u32),
+                x,
+                140,
+                width,
+                30,
+                Some(hwnd),
+                Some(HMENU(id as usize as *mut _)),
+                Some(instance.into()),
+                None,
+            );
+        }
+        let _ = ShowWindow(hwnd, SW_SHOW);
+        let mut message = MSG::default();
+        while GetMessageW(&mut message, None, 0, 0).into() {
+            let _ = TranslateMessage(&message);
+            DispatchMessageW(&message);
+            if !IsWindow(Some(hwnd)).as_bool() {
+                break;
+            }
+        }
+    }
+    TRIM_DIALOG
+        .get_or_init(|| unreachable!())
+        .lock()
+        .expect("trim dialog lock")
+        .result
+        .flatten()
 }
 
 fn choose_quality() -> crate::GifQuality {
@@ -366,6 +519,86 @@ fn select_region() -> Result<Option<Region>, Box<dyn Error>> {
         }
     }
     Ok(slot.lock().expect("selection lock").take())
+}
+
+unsafe extern "system" fn trim_proc(
+    hwnd: HWND,
+    message: u32,
+    wparam: WPARAM,
+    lparam: LPARAM,
+) -> LRESULT {
+    match message {
+        WM_COMMAND => {
+            match wparam.0 & 0xffff {
+                id if id == TRIM_SAVE_ID as usize => {
+                    let start = unsafe { read_trim_seconds(hwnd, TRIM_START_ID) };
+                    let end = unsafe { read_trim_seconds(hwnd, TRIM_END_ID) };
+                    let valid = TRIM_DIALOG
+                        .get_or_init(|| unreachable!())
+                        .lock()
+                        .expect("trim dialog lock")
+                        .recording_end;
+                    let Some((start, end)) = start
+                        .zip(end)
+                        .filter(|(start, end)| *start < *end && *end <= valid)
+                    else {
+                        show_text(
+                            "Enter finite seconds with 0 <= Start < End <= recording duration.",
+                            MB_OK | MB_ICONERROR,
+                        );
+                        return LRESULT(0);
+                    };
+                    set_trim_dialog_result(Some((start, end)));
+                    let _ = unsafe { DestroyWindow(hwnd) };
+                }
+                id if id == TRIM_FULL_ID as usize => {
+                    let end = TRIM_DIALOG
+                        .get_or_init(|| unreachable!())
+                        .lock()
+                        .expect("trim dialog lock")
+                        .recording_end;
+                    set_trim_dialog_result(Some((std::time::Duration::ZERO, end)));
+                    let _ = unsafe { DestroyWindow(hwnd) };
+                }
+                id if id == TRIM_CANCEL_ID as usize => {
+                    set_trim_dialog_result(None);
+                    let _ = unsafe { DestroyWindow(hwnd) };
+                }
+                _ => {}
+            }
+            LRESULT(0)
+        }
+        WM_CLOSE => {
+            set_trim_dialog_result(None);
+            let _ = unsafe { DestroyWindow(hwnd) };
+            LRESULT(0)
+        }
+        _ => unsafe { DefWindowProcW(hwnd, message, wparam, lparam) },
+    }
+}
+
+fn set_trim_dialog_result(result: Option<(std::time::Duration, std::time::Duration)>) {
+    TRIM_DIALOG
+        .get_or_init(|| unreachable!())
+        .lock()
+        .expect("trim dialog lock")
+        .result = Some(result);
+}
+
+unsafe fn read_trim_seconds(hwnd: HWND, id: i32) -> Option<std::time::Duration> {
+    let edit = unsafe { GetDlgItem(Some(hwnd), id) }.ok()?;
+    let mut buffer = [0_u16; 64];
+    let length = unsafe { GetWindowTextW(edit, &mut buffer) };
+    let text = String::from_utf16_lossy(&buffer[..length as usize]);
+    let seconds = text.trim().parse::<f64>().ok()?;
+    seconds
+        .is_finite()
+        .then(|| std::time::Duration::try_from_secs_f64(seconds).ok())
+        .flatten()
+}
+
+fn wide(value: &str) -> Vec<u16> {
+    value.encode_utf16().chain(Some(0)).collect()
 }
 
 unsafe extern "system" fn overlay_proc(

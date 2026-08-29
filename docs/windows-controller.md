@@ -43,9 +43,13 @@ reached the record confirmation. Recording completed successfully.
 The current release was also exercised through capture, Review, Save, and the
 Fast/Balanced/Best quality chooser; the chooser was visible and interactive.
 
-Review trim presets were exercised on the same host: a three-second recording
-saved with the first-half preset decoded as five GIF frames with 150
-centiseconds of total delay.
+The current native Trim dialog exposes Start and End (seconds), Save range,
+Full range, and Cancel. Windows MCP opened it from a three-second recording
+with `0.00` and `3.00` populated, and confirmed that both fields receive text.
+This host's input automation appends text instead of replacing a selected
+native edit value, so its final custom-range save is covered by the Rust
+range-validation and timeline-reconstruction tests rather than claimed as a
+completed end-to-end UI assertion.
 
 The saved GIF was decoded by the repository's `inspect_gif` example:
 
@@ -74,9 +78,8 @@ Stop timing, GIF creation, GIF timing, and file clipboard construction on an
 interactive Windows desktop. The available host has a single 96-DPI display,
 so it proves the V2 API initializes and this physical-pixel path works there.
 It does not prove mixed-DPI or negative-coordinate multi-monitor operation,
-arbitrary Start/End trim controls, Tray, HUD exclusion in a captured GIF, or
-third-party clipboard compatibility; those require their own completed
-implementations and tests.
+Tray, HUD exclusion in a captured GIF, or third-party clipboard compatibility;
+those require their own completed implementations and tests.
 
 The HUD requests `SetWindowDisplayAffinity(WDA_EXCLUDEFROMCAPTURE)` best effort.
 Microsoft documents that value as suitable for recording controls on
