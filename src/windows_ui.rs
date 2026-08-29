@@ -137,9 +137,7 @@ fn message_loop() -> Result<(), Box<dyn Error>> {
                 if let Some(recording) = &active {
                     recording.stop.store(true, Ordering::Relaxed);
                 } else if let Some(region) = select_region()? {
-                    let Some(cursor) = choose_cursor() else {
-                        continue;
-                    };
+                    let cursor = choose_cursor();
                     let choice = MessageBoxW(
                         None,
                         w!(
@@ -205,14 +203,14 @@ fn start_recording(
     })
 }
 
-fn choose_cursor() -> Option<CursorCapture> {
+fn choose_cursor() -> CursorCapture {
     match show_choice(
         "QuickGIFlick cursor",
-        "Cursor mode:\n\nYes = Original\nNo = Hidden\nCancel = return to selection",
+        "Cursor mode:\n\nYes = Original\nNo = Standard\nCancel = Hidden",
     ) {
-        IDYES => Some(CursorCapture::Include),
-        IDNO => Some(CursorCapture::Exclude),
-        _ => None,
+        IDYES => CursorCapture::Include,
+        IDNO => CursorCapture::System,
+        _ => CursorCapture::Exclude,
     }
 }
 

@@ -144,6 +144,7 @@ fn cursor_capture() -> CursorCapture {
 fn cursor_capture_from(value: Option<&str>) -> CursorCapture {
     match value {
         Some("hidden") | Some("off") => CursorCapture::Exclude,
+        Some("standard") => CursorCapture::System,
         _ => CursorCapture::Include,
     }
 }
@@ -429,6 +430,7 @@ mod tests {
         assert_eq!(cursor_capture_from(None), CursorCapture::Include);
         assert_eq!(cursor_capture_from(Some("hidden")), CursorCapture::Exclude);
         assert_eq!(cursor_capture_from(Some("off")), CursorCapture::Exclude);
+        assert_eq!(cursor_capture_from(Some("standard")), CursorCapture::System);
     }
 
     #[test]

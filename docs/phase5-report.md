@@ -44,6 +44,11 @@ Unchanged updates with no composites, and both GIFs decoded to 3.00 seconds.
 This preserves timestamp timing in either mode without forwarding a full frame
 for pointer metadata alone.
 
+Standard was then exercised with the same 15-FPS, three-second workload. Full
+and Partial both decoded to 46 frames and 3.01 seconds; each observed 44 Delta
+updates and 46 standard-cursor composites. The renderer matched the active
+Windows standard cursor and would have fallen back to Arrow if unmatched.
+
 The same Original cursor workload then ran for 30 seconds at 15 FPS. Full
 encoded 451 frames and Partial encoded 452; both decoded to 30.01 seconds.
 Full retained 30,299,156 B and Partial retained 22,132,332 B of timeline
@@ -72,10 +77,10 @@ QuickGIFlick's GitHub Actions job runs the same gates on `windows-latest`.
 
 - The available host has one 96-DPI display; mixed-DPI, negative-coordinate,
   and multi-monitor interaction remain unproven.
-- ScreenDelta now composites supported DXGI Color cursor shapes for the
-  default Original capture path. `QUICKGIFFLICK_CURSOR=hidden` excludes them;
-  Standard cursor replacement and Monochrome/Masked Color shape support remain
-  unimplemented.
+- ScreenDelta composites supported DXGI Color cursor shapes for the default
+  Original path, and `QUICKGIFFLICK_CURSOR=standard` renders matching Windows
+  standard cursor shapes with Arrow fallback. `hidden` excludes cursor pixels.
+  Monochrome and Masked Color DXGI shape support remains unimplemented.
 - Partial GIF encoding is experimental; full-canvas output remains default
   pending compatibility coverage.
 - The tray icon is verified, but its menu selection could not be asserted via
