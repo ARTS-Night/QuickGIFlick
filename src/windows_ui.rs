@@ -21,8 +21,9 @@ use windows::{
         Graphics::Gdi::{
             BLACK_BRUSH, BeginPaint, CombineRgn, CreateRectRgn, DT_CENTER, DT_SINGLELINE,
             DT_VCENTER, DeleteObject, DrawTextW, EndPaint, FillRect, GetStockObject,
-            InvalidateRect, PAINTSTRUCT, RGN_DIFF, Rectangle, SetBkMode, SetTextColor,
-            SetWindowRgn, TRANSPARENT, WHITE_BRUSH,
+            InvalidateRect, PAINTSTRUCT, RDW_ERASE, RDW_INVALIDATE, RDW_UPDATENOW, RGN_DIFF,
+            Rectangle, RedrawWindow, SetBkMode, SetTextColor, SetWindowRgn, TRANSPARENT,
+            WHITE_BRUSH,
         },
         System::{
             DataExchange::{CloseClipboard, EmptyClipboard, OpenClipboard, SetClipboardData},
@@ -45,17 +46,17 @@ use windows::{
                 CreateWindowExW, DefWindowProcW, DestroyMenu, DestroyWindow, DispatchMessageW,
                 ES_AUTOHSCROLL, GWLP_USERDATA, GetClientRect, GetCursorPos, GetDlgItem,
                 GetMessageW, GetSystemMetrics, GetWindowLongPtrW, GetWindowTextW, HMENU, IDC_CROSS,
-                IDCANCEL, IDNO, IDOK, IDYES, IsWindow, KillTimer, LWA_ALPHA, LoadCursorW,
-                LoadIconW, MB_ICONERROR, MB_OK, MB_OKCANCEL, MB_YESNO, MB_YESNOCANCEL, MF_STRING,
-                MSG, MessageBoxW, PostMessageW, RegisterClassW, SM_CXVIRTUALSCREEN,
-                SM_CYVIRTUALSCREEN, SM_XVIRTUALSCREEN, SM_YVIRTUALSCREEN, SW_SHOW,
-                SetForegroundWindow, SetLayeredWindowAttributes, SetTimer,
-                SetWindowDisplayAffinity, SetWindowLongPtrW, ShowWindow, TrackPopupMenu,
-                TranslateMessage, WDA_EXCLUDEFROMCAPTURE, WINDOW_STYLE, WM_APP, WM_CLOSE,
-                WM_COMMAND, WM_CONTEXTMENU, WM_DESTROY, WM_HOTKEY, WM_KEYDOWN, WM_LBUTTONDOWN,
-                WM_LBUTTONUP, WM_MOUSEMOVE, WM_PAINT, WM_RBUTTONUP, WM_TIMER, WNDCLASSW, WS_BORDER,
-                WS_CAPTION, WS_CHILD, WS_EX_DLGMODALFRAME, WS_EX_LAYERED, WS_EX_TOOLWINDOW,
-                WS_EX_TOPMOST, WS_POPUP, WS_SYSMENU, WS_VISIBLE,
+                IDCANCEL, IDNO, IDOK, IDYES, IsWindow, LWA_ALPHA, LoadCursorW, LoadIconW,
+                MB_ICONERROR, MB_OK, MB_OKCANCEL, MB_YESNO, MB_YESNOCANCEL, MF_STRING, MSG,
+                MessageBoxW, PostMessageW, RegisterClassW, SM_CXVIRTUALSCREEN, SM_CYVIRTUALSCREEN,
+                SM_XVIRTUALSCREEN, SM_YVIRTUALSCREEN, SW_SHOW, SetForegroundWindow,
+                SetLayeredWindowAttributes, SetTimer, SetWindowDisplayAffinity, SetWindowLongPtrW,
+                SetWindowTextW, ShowWindow, TrackPopupMenu, TranslateMessage,
+                WDA_EXCLUDEFROMCAPTURE, WINDOW_STYLE, WM_APP, WM_CLOSE, WM_COMMAND, WM_CONTEXTMENU,
+                WM_DESTROY, WM_HOTKEY, WM_KEYDOWN, WM_LBUTTONDOWN, WM_LBUTTONUP, WM_MOUSEMOVE,
+                WM_PAINT, WM_RBUTTONUP, WM_TIMER, WNDCLASSW, WS_BORDER, WS_CAPTION, WS_CHILD,
+                WS_EX_DLGMODALFRAME, WS_EX_LAYERED, WS_EX_TOOLWINDOW, WS_EX_TOPMOST, WS_POPUP,
+                WS_SYSMENU, WS_VISIBLE,
             },
         },
     },
@@ -108,6 +109,7 @@ struct ActiveRecording {
 struct HudState {
     stop: Arc<AtomicBool>,
     started: std::time::Instant,
+    displayed_second: u64,
 }
 
 #[derive(Default)]
@@ -206,7 +208,6 @@ fn message_loop() -> Result<(), Box<dyn Error>> {
             let _ = TranslateMessage(&message);
             DispatchMessageW(&message);
         }
-        let _ = KillTimer(None, UI_TIMER_ID);
         remove_tray(tray);
     }
     Ok(())
@@ -220,7 +221,7 @@ fn start_recording(
     let (sender, completed) = mpsc::channel();
     let worker_stop = stop.clone();
     let hud = show_recording_hud(stop.clone())?;
-    if unsafe { SetTimer(None, UI_TIMER_ID, 100, None) } == 0 {
+    if unsafe { SetTimer(Some(hud), UI_TIMER_ID, 100, None) } == 0 {
         unsafe {
             let _ = DestroyWindow(hud);
         }
@@ -257,9 +258,6 @@ fn poll_state(state: &mut AppState) {
     match state {
         AppState::Ready => {}
         AppState::Recording(recording) => {
-            unsafe {
-                let _ = InvalidateRect(Some(recording.hud), None, false);
-            }
             let result = match recording.completed.try_recv() {
                 Ok(result) => result,
                 Err(mpsc::TryRecvError::Empty) => return,
@@ -277,16 +275,11 @@ fn poll_state(state: &mut AppState) {
                 Ok(recording) => {
                     if let Some(encoding) = review_recording(recording) {
                         *state = AppState::Encoding(encoding);
-                    } else {
-                        unsafe {
-                            let _ = KillTimer(None, UI_TIMER_ID);
-                        }
                     }
                 }
-                Err(error) => unsafe {
-                    let _ = KillTimer(None, UI_TIMER_ID);
+                Err(error) => {
                     show_text(&format!("Recording failed: {error}"), MB_OK | MB_ICONERROR);
-                },
+                }
             }
         }
         AppState::Encoding(encoding) => {
@@ -303,7 +296,6 @@ fn poll_state(state: &mut AppState) {
             };
             unsafe {
                 let _ = DestroyWindow(encoding.window);
-                let _ = KillTimer(None, UI_TIMER_ID);
             }
             match result {
                 Ok(path) => offer_copy(&path),
@@ -718,6 +710,7 @@ fn show_recording_hud(stop: Arc<AtomicBool>) -> Result<HWND, Box<dyn Error>> {
         let state = Box::new(HudState {
             stop,
             started: std::time::Instant::now(),
+            displayed_second: u64::MAX,
         });
         let _ = SetWindowLongPtrW(hwnd, GWLP_USERDATA, Box::into_raw(state) as isize);
         let _ = SetLayeredWindowAttributes(hwnd, COLORREF(0), 220, LWA_ALPHA);
@@ -768,6 +761,10 @@ fn show_encoding_window() -> Result<HWND, Box<dyn Error>> {
             total: 0,
         });
         let _ = SetWindowLongPtrW(hwnd, GWLP_USERDATA, Box::into_raw(state) as isize);
+        if SetTimer(Some(hwnd), UI_TIMER_ID, 100, None) == 0 {
+            let _ = DestroyWindow(hwnd);
+            return Err("could not start the QuickGIFlick progress timer".into());
+        }
         let _ = ShowWindow(hwnd, SW_SHOW);
         Ok(hwnd)
     }
@@ -1036,6 +1033,30 @@ unsafe extern "system" fn hud_proc(
     lparam: LPARAM,
 ) -> LRESULT {
     match message {
+        WM_TIMER => {
+            let pointer = unsafe { GetWindowLongPtrW(hwnd, GWLP_USERDATA) as *mut HudState };
+            if !pointer.is_null() {
+                let state = unsafe { &mut *pointer };
+                let second = state.started.elapsed().as_secs();
+                if state.displayed_second != second {
+                    state.displayed_second = second;
+                    let title = wide(&format!(
+                        "QuickGIFlick recording {}",
+                        recording_clock_text(state.started.elapsed())
+                    ));
+                    let _ = unsafe { SetWindowTextW(hwnd, PCWSTR(title.as_ptr())) };
+                }
+            }
+            let _ = unsafe {
+                RedrawWindow(
+                    Some(hwnd),
+                    None,
+                    None,
+                    RDW_INVALIDATE | RDW_ERASE | RDW_UPDATENOW,
+                )
+            };
+            LRESULT(0)
+        }
         WM_LBUTTONDOWN => {
             let pointer = unsafe { GetWindowLongPtrW(hwnd, GWLP_USERDATA) as *mut HudState };
             if !pointer.is_null() {
@@ -1092,6 +1113,17 @@ unsafe extern "system" fn encoding_proc(
     lparam: LPARAM,
 ) -> LRESULT {
     match message {
+        WM_TIMER => {
+            let _ = unsafe {
+                RedrawWindow(
+                    Some(hwnd),
+                    None,
+                    None,
+                    RDW_INVALIDATE | RDW_ERASE | RDW_UPDATENOW,
+                )
+            };
+            LRESULT(0)
+        }
         WM_PAINT => {
             let mut paint = PAINTSTRUCT::default();
             let dc = unsafe { BeginPaint(hwnd, &mut paint) };

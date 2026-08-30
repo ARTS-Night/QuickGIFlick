@@ -95,6 +95,13 @@ Peak working set was 44,699,648 B, peak private memory was 39,501,824 B, and
 the 2,778,048 B logical spill occupied 37,759 B. A separate three-second idle
 sample consumed 0.000 ms of process CPU and held an 8,339,456 B working set.
 
+The final native-UI regression found that the layered recording HUD retained
+its initial `00:00` paint even though capture and stop polling continued. The
+timer is now owned by the HUD window, forces a synchronous Win32 redraw, and
+updates the accessible window title once per second. Windows automation
+verified both the visible text and title at `00:03`, then stopped recording and
+reached Review normally. The progress window uses the same window-owned timer.
+
 ## Remaining limits
 
 - The available host has one 96-DPI display; mixed-DPI, negative-coordinate,
