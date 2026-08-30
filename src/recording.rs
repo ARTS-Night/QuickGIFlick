@@ -126,7 +126,7 @@ impl Recording {
     }
 
     pub fn initial(&mut self) -> std::io::Result<CpuFrame> {
-        self.load_frame(&self.initial.clone())
+        Self::load_frame(&mut self.spill_file, &self.initial)
     }
 
     pub fn update_len(&self) -> usize {
@@ -153,21 +153,17 @@ impl Recording {
         index: usize,
         canvas: &mut crate::timeline::Canvas,
     ) -> Result<(), Box<dyn std::error::Error>> {
-        let update = &self.updates[index];
-        let frames = match update {
+        let spill_file = &mut self.spill_file;
+        match &self.updates[index] {
             Update::Full { frame, .. } => {
-                let frame = frame.clone();
-                canvas.replace(self.load_frame(&frame)?);
-                return Ok(());
+                canvas.replace(Self::load_frame(spill_file, frame)?);
             }
-            Update::Delta { regions, .. } => regions
-                .iter()
-                .map(|region| (region.region, region.pixels.clone()))
-                .collect::<Vec<_>>(),
-        };
-        for (region, frame) in frames {
-            let pixels = self.load_frame(&frame)?;
-            canvas.apply(region, &pixels)?;
+            Update::Delta { regions, .. } => {
+                for region in regions {
+                    let pixels = Self::load_frame(spill_file, &region.pixels)?;
+                    canvas.apply(region.region, &pixels)?;
+                }
+            }
         }
         Ok(())
     }
@@ -298,9 +294,9 @@ impl Recording {
         let raw_compressed = zstd::bulk::compress(&data, 1)
             .map_err(|error| std::io::Error::other(format!("spill compression failed: {error}")))?;
         let mut stored = if raw_compressed.len() < len {
-            raw_compressed
+            Some(raw_compressed)
         } else {
-            data.clone()
+            None
         };
         let mut previous = None;
         if let Some(candidate) = self
@@ -309,7 +305,7 @@ impl Recording {
             .filter(|candidate| candidate.width == width && candidate.height == height)
             .filter(|candidate| candidate.spill_depth() < 8)
         {
-            let previous_data = self.load_frame(&candidate)?;
+            let previous_data = Self::load_frame(&mut self.spill_file, &candidate)?;
             if previous_data.data.len() == data.len() {
                 let xor: Vec<u8> = data
                     .iter()
@@ -319,12 +315,13 @@ impl Recording {
                 let xor_compressed = zstd::bulk::compress(&xor, 1).map_err(|error| {
                     std::io::Error::other(format!("spill delta compression failed: {error}"))
                 })?;
-                if xor_compressed.len() < stored.len() {
-                    stored = xor_compressed;
+                if xor_compressed.len() < stored.as_ref().map_or(len, Vec::len) {
+                    stored = Some(xor_compressed);
                     previous = Some(candidate);
                 }
             }
         }
+        let stored = stored.unwrap_or(data);
         let file = self.spill_file()?;
         let offset = file.seek(SeekFrom::End(0))?;
         file.write_all(&stored)?;
@@ -353,7 +350,7 @@ impl Recording {
         })
     }
 
-    fn load_frame(&mut self, frame: &StoredFrame) -> std::io::Result<CpuFrame> {
+    fn load_frame(spill_file: &mut Option<File>, frame: &StoredFrame) -> std::io::Result<CpuFrame> {
         let data = match &frame.payload {
             Payload::Memory(data) => data.clone(),
             Payload::Spill {
@@ -361,8 +358,7 @@ impl Recording {
                 stored_len,
                 raw_len,
             } => {
-                let file = self
-                    .spill_file
+                let file = spill_file
                     .as_mut()
                     .expect("spill metadata requires a spill file");
                 file.seek(SeekFrom::Start(*offset))?;
@@ -382,8 +378,7 @@ impl Recording {
                 raw_len,
                 previous,
             } => {
-                let file = self
-                    .spill_file
+                let file = spill_file
                     .as_mut()
                     .expect("spill metadata requires a spill file");
                 file.seek(SeekFrom::Start(*offset))?;
@@ -392,7 +387,7 @@ impl Recording {
                 let delta = zstd::bulk::decompress(&stored, *raw_len).map_err(|error| {
                     std::io::Error::other(format!("spill delta decompression failed: {error}"))
                 })?;
-                let previous = self.load_frame(previous)?;
+                let previous = Self::load_frame(spill_file, previous)?;
                 if previous.data.len() != delta.len() {
                     return Err(std::io::Error::other("spill delta frame size mismatch"));
                 }
@@ -551,7 +546,12 @@ mod tests {
             Update::Full { frame, .. } => frame.clone(),
             Update::Delta { .. } => unreachable!(),
         };
-        assert_eq!(recording.load_frame(&stored).unwrap().data, next.data);
+        assert_eq!(
+            Recording::load_frame(&mut recording.spill_file, &stored)
+                .unwrap()
+                .data,
+            next.data
+        );
     }
 
     #[test]

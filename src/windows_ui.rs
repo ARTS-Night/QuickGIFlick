@@ -63,7 +63,7 @@ use windows::{
 };
 
 const HOTKEY_ID: i32 = 0x5147;
-const RECORDING_TIMER_ID: usize = 0x5147;
+const UI_TIMER_ID: usize = 0x5147;
 const OVERLAY_CLASS: PCWSTR = w!("QuickGIFlickSelectionOverlay");
 const HUD_CLASS: PCWSTR = w!("QuickGIFlickRecordingHud");
 const ENCODING_CLASS: PCWSTR = w!("QuickGIFlickEncodingProgress");
@@ -157,7 +157,6 @@ fn message_loop() -> Result<(), Box<dyn Error>> {
     let mut state = AppState::Ready;
     let tray = show_tray()?;
     unsafe {
-        let _ = SetTimer(None, RECORDING_TIMER_ID, 100, None);
         if std::env::var_os("QUICKGIFFLICK_AUTOSTART").is_some() {
             let _ = PostMessageW(Some(tray), TRAY_START, WPARAM(0), LPARAM(0));
         }
@@ -207,7 +206,7 @@ fn message_loop() -> Result<(), Box<dyn Error>> {
             let _ = TranslateMessage(&message);
             DispatchMessageW(&message);
         }
-        let _ = KillTimer(None, RECORDING_TIMER_ID);
+        let _ = KillTimer(None, UI_TIMER_ID);
         remove_tray(tray);
     }
     Ok(())
@@ -221,6 +220,12 @@ fn start_recording(
     let (sender, completed) = mpsc::channel();
     let worker_stop = stop.clone();
     let hud = show_recording_hud(stop.clone())?;
+    if unsafe { SetTimer(None, UI_TIMER_ID, 100, None) } == 0 {
+        unsafe {
+            let _ = DestroyWindow(hud);
+        }
+        return Err("could not start the QuickGIFlick UI timer".into());
+    }
     thread::spawn(move || {
         let result = crate::capture_recording_with_cursor(
             CaptureSource::Region(region),
@@ -255,8 +260,12 @@ fn poll_state(state: &mut AppState) {
             unsafe {
                 let _ = InvalidateRect(Some(recording.hud), None, false);
             }
-            let Ok(result) = recording.completed.try_recv() else {
-                return;
+            let result = match recording.completed.try_recv() {
+                Ok(result) => result,
+                Err(mpsc::TryRecvError::Empty) => return,
+                Err(mpsc::TryRecvError::Disconnected) => {
+                    Err("capture worker stopped unexpectedly".to_owned())
+                }
             };
             let AppState::Recording(recording) = std::mem::replace(state, AppState::Ready) else {
                 unreachable!();
@@ -268,23 +277,33 @@ fn poll_state(state: &mut AppState) {
                 Ok(recording) => {
                     if let Some(encoding) = review_recording(recording) {
                         *state = AppState::Encoding(encoding);
+                    } else {
+                        unsafe {
+                            let _ = KillTimer(None, UI_TIMER_ID);
+                        }
                     }
                 }
-                Err(error) => {
-                    show_text(&format!("Recording failed: {error}"), MB_OK | MB_ICONERROR)
-                }
+                Err(error) => unsafe {
+                    let _ = KillTimer(None, UI_TIMER_ID);
+                    show_text(&format!("Recording failed: {error}"), MB_OK | MB_ICONERROR);
+                },
             }
         }
         AppState::Encoding(encoding) => {
             update_encoding_window(encoding);
-            let Ok(result) = encoding.completed.try_recv() else {
-                return;
+            let result = match encoding.completed.try_recv() {
+                Ok(result) => result,
+                Err(mpsc::TryRecvError::Empty) => return,
+                Err(mpsc::TryRecvError::Disconnected) => {
+                    Err("encoder worker stopped unexpectedly".to_owned())
+                }
             };
             let AppState::Encoding(encoding) = std::mem::replace(state, AppState::Ready) else {
                 unreachable!();
             };
             unsafe {
                 let _ = DestroyWindow(encoding.window);
+                let _ = KillTimer(None, UI_TIMER_ID);
             }
             match result {
                 Ok(path) => offer_copy(&path),

@@ -79,6 +79,22 @@ three-second run.
 Both repositories have passing Rust formatting, check, test, and clippy gates.
 QuickGIFlick's GitHub Actions job runs the same gates on `windows-latest`.
 
+### 2026-08-30 lightweight ownership pass
+
+Timeline reconstruction now borrows stored-frame metadata and the spill file
+as disjoint fields. This removes the former temporary `StoredFrame` clones;
+for an in-memory Full frame, reconstruction now creates only the required
+output pixel buffer instead of cloning that buffer twice. Raw spill fallback
+also moves the original pixels instead of cloning them. The native controller
+now runs its 100 ms polling timer only while recording or encoding, and treats
+a disconnected worker as an error instead of waiting forever.
+
+An actual 1920×1080, 30-FPS, five-second capture with an 8 MiB recording
+budget completed with 14 GIF frames and decoded to exactly 500 centiseconds.
+Peak working set was 44,699,648 B, peak private memory was 39,501,824 B, and
+the 2,778,048 B logical spill occupied 37,759 B. A separate three-second idle
+sample consumed 0.000 ms of process CPU and held an 8,339,456 B working set.
+
 ## Remaining limits
 
 - The available host has one 96-DPI display; mixed-DPI, negative-coordinate,
