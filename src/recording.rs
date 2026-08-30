@@ -18,6 +18,12 @@ enum Payload {
         stored_len: usize,
         raw_len: usize,
     },
+    SpillDelta {
+        offset: u64,
+        stored_len: usize,
+        raw_len: usize,
+        previous: Box<StoredFrame>,
+    },
 }
 
 #[derive(Clone)]
@@ -56,6 +62,7 @@ pub struct Recording {
     store_time: Duration,
     spill_file: Option<File>,
     spill_path: Option<PathBuf>,
+    last_spilled_full: Option<StoredFrame>,
 }
 
 impl Recording {
@@ -77,13 +84,18 @@ impl Recording {
             store_time: Duration::ZERO,
             spill_file: None,
             spill_path: None,
+            last_spilled_full: None,
         };
         recording.initial = recording.store_frame(initial)?;
+        if recording.initial.is_spill() {
+            recording.last_spilled_full = Some(recording.initial.clone());
+        }
         Ok(recording)
     }
 
     pub fn append_full(&mut self, at: Duration, frame: CpuFrame) -> std::io::Result<()> {
-        let frame = self.store_frame(frame)?;
+        let frame = self.store_full_frame(frame)?;
+        self.last_spilled_full = frame.is_spill().then(|| frame.clone());
         self.end = at;
         self.updates.push(Update::Full { at, frame });
         Ok(())
@@ -261,6 +273,86 @@ impl Recording {
         })
     }
 
+    fn store_full_frame(&mut self, frame: CpuFrame) -> std::io::Result<StoredFrame> {
+        let started = std::time::Instant::now();
+        let CpuFrame {
+            width,
+            height,
+            stride,
+            format,
+            data,
+        } = frame;
+        let len = data.len();
+        if self.resident_payload_bytes.saturating_add(len) <= self.memory_budget {
+            self.resident_payload_bytes += len;
+            self.store_time += started.elapsed();
+            return Ok(StoredFrame {
+                width,
+                height,
+                stride,
+                format,
+                payload: Payload::Memory(data),
+            });
+        }
+
+        let raw_compressed = zstd::bulk::compress(&data, 1)
+            .map_err(|error| std::io::Error::other(format!("spill compression failed: {error}")))?;
+        let mut stored = if raw_compressed.len() < len {
+            raw_compressed
+        } else {
+            data.clone()
+        };
+        let mut previous = None;
+        if let Some(candidate) = self
+            .last_spilled_full
+            .clone()
+            .filter(|candidate| candidate.width == width && candidate.height == height)
+            .filter(|candidate| candidate.spill_depth() < 8)
+        {
+            let previous_data = self.load_frame(&candidate)?;
+            if previous_data.data.len() == data.len() {
+                let xor: Vec<u8> = data
+                    .iter()
+                    .zip(previous_data.data.iter())
+                    .map(|(current, previous)| current ^ previous)
+                    .collect();
+                let xor_compressed = zstd::bulk::compress(&xor, 1).map_err(|error| {
+                    std::io::Error::other(format!("spill delta compression failed: {error}"))
+                })?;
+                if xor_compressed.len() < stored.len() {
+                    stored = xor_compressed;
+                    previous = Some(candidate);
+                }
+            }
+        }
+        let file = self.spill_file()?;
+        let offset = file.seek(SeekFrom::End(0))?;
+        file.write_all(&stored)?;
+        self.spilled_payload_bytes += len;
+        self.spill_file_bytes += stored.len();
+        let payload = match previous {
+            Some(previous) => Payload::SpillDelta {
+                offset,
+                stored_len: stored.len(),
+                raw_len: len,
+                previous: Box::new(previous),
+            },
+            None => Payload::Spill {
+                offset,
+                stored_len: stored.len(),
+                raw_len: len,
+            },
+        };
+        self.store_time += started.elapsed();
+        Ok(StoredFrame {
+            width,
+            height,
+            stride,
+            format,
+            payload,
+        })
+    }
+
     fn load_frame(&mut self, frame: &StoredFrame) -> std::io::Result<CpuFrame> {
         let data = match &frame.payload {
             Payload::Memory(data) => data.clone(),
@@ -283,6 +375,32 @@ impl Recording {
                         std::io::Error::other(format!("spill decompression failed: {error}"))
                     })?
                 }
+            }
+            Payload::SpillDelta {
+                offset,
+                stored_len,
+                raw_len,
+                previous,
+            } => {
+                let file = self
+                    .spill_file
+                    .as_mut()
+                    .expect("spill metadata requires a spill file");
+                file.seek(SeekFrom::Start(*offset))?;
+                let mut stored = vec![0; *stored_len];
+                file.read_exact(&mut stored)?;
+                let delta = zstd::bulk::decompress(&stored, *raw_len).map_err(|error| {
+                    std::io::Error::other(format!("spill delta decompression failed: {error}"))
+                })?;
+                let previous = self.load_frame(previous)?;
+                if previous.data.len() != delta.len() {
+                    return Err(std::io::Error::other("spill delta frame size mismatch"));
+                }
+                delta
+                    .into_iter()
+                    .zip(previous.data)
+                    .map(|(delta, previous)| delta ^ previous)
+                    .collect()
             }
         };
         Ok(CpuFrame {
@@ -311,6 +429,22 @@ impl Recording {
             self.spill_file = Some(file);
         }
         Ok(self.spill_file.as_mut().expect("spill file was created"))
+    }
+}
+
+impl StoredFrame {
+    fn is_spill(&self) -> bool {
+        matches!(
+            self.payload,
+            Payload::Spill { .. } | Payload::SpillDelta { .. }
+        )
+    }
+
+    fn spill_depth(&self) -> u8 {
+        match &self.payload {
+            Payload::SpillDelta { previous, .. } => previous.spill_depth().saturating_add(1),
+            _ => 0,
+        }
     }
 }
 
@@ -387,6 +521,37 @@ mod tests {
         let mut recording = Recording::new(initial.clone(), 0).unwrap();
         assert!(recording.spill_file_bytes() < recording.spilled_payload_bytes());
         assert_eq!(recording.initial().unwrap().data, initial.data);
+    }
+
+    #[test]
+    fn delta_compresses_consecutive_full_frames_and_roundtrips() {
+        let mut initial = frame(256, 256, 0);
+        for (index, byte) in initial.data.iter_mut().enumerate() {
+            *byte = (index as u32)
+                .wrapping_mul(1_103_515_245)
+                .wrapping_add(12_345) as u8;
+        }
+        let mut recording = Recording::new(initial.clone(), 0).unwrap();
+        let mut next = initial.clone();
+        next.data[70 * next.stride + 70 * 4] = 1;
+        recording
+            .append_full(Duration::from_millis(10), next.clone())
+            .unwrap();
+        assert!(matches!(
+            recording.updates[0],
+            Update::Full {
+                frame: StoredFrame {
+                    payload: Payload::SpillDelta { .. },
+                    ..
+                },
+                ..
+            }
+        ));
+        let stored = match &recording.updates[0] {
+            Update::Full { frame, .. } => frame.clone(),
+            Update::Delta { .. } => unreachable!(),
+        };
+        assert_eq!(recording.load_frame(&stored).unwrap().data, next.data);
     }
 
     #[test]

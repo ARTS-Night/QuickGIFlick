@@ -105,7 +105,9 @@ exceeded and are removed after a successful recording. Spill chunks use fast
 lossless compression when it reduces their size; incompressible chunks stay
 raw so frames are never discarded. Debug output reports both logical
 `spilled_payload_bytes` and physical `spill_file_bytes`. The app does not
-upload recordings.
+upload recordings. Consecutive Full Frames also use a bounded temporal XOR
+chain before compression, with periodic independent frames so Trim remains
+safe and random-access reconstruction stays bounded.
 
 ## Basic operation
 
