@@ -110,6 +110,21 @@ accessible title from `00:07` to `00:15`, then wrapped to `00:06`; Discard
 closed it normally. Static intervals repaint only when the displayed second
 changes, while visual updates repaint when their timestamp is reached.
 
+## Post-roadmap stress observation — 2026-08-31
+
+An interactive release build completed a normal capture and animated Review on
+the Windows MCP desktop. A separate debug benchmark used a 1 MiB recording
+budget, 30 FPS, and a 10-second full-motion desktop. It captured 300 frames and
+299 Full updates; the bounded resident memory stayed at 0 B while the logical
+Spill payload reached 1,258,905,600 B. Capture/readback completed, but the
+subsequent full-canvas GIF encode exceeded 150 seconds and was stopped. No
+recording spill file remained afterward.
+
+This is not a correctness failure, but it is a release performance blocker for
+full-motion recordings under an artificially tiny memory budget. The next
+optimization should benchmark a realistic memory budget and avoid promising
+fast encoding when the timeline is dominated by Full spill frames.
+
 ## Remaining limits
 
 - The available host has one 96-DPI display; mixed-DPI, negative-coordinate,
