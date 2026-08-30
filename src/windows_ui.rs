@@ -47,17 +47,17 @@ use windows::{
                 CreateWindowExW, DefWindowProcW, DestroyMenu, DestroyWindow, DispatchMessageW,
                 ES_AUTOHSCROLL, GWLP_USERDATA, GetClientRect, GetCursorPos, GetDlgItem,
                 GetMessageW, GetSystemMetrics, GetWindowLongPtrW, GetWindowTextW, HMENU, IDC_CROSS,
-                IDCANCEL, IDNO, IDOK, IDYES, IsWindow, LWA_ALPHA, LoadCursorW, LoadIconW,
-                MB_ICONERROR, MB_OK, MB_OKCANCEL, MB_YESNO, MB_YESNOCANCEL, MF_STRING, MSG,
-                MessageBoxW, PostMessageW, RegisterClassW, SM_CXVIRTUALSCREEN, SM_CYVIRTUALSCREEN,
-                SM_XVIRTUALSCREEN, SM_YVIRTUALSCREEN, SW_SHOW, SetForegroundWindow,
-                SetLayeredWindowAttributes, SetTimer, SetWindowDisplayAffinity, SetWindowLongPtrW,
-                SetWindowTextW, ShowWindow, TrackPopupMenu, TranslateMessage,
-                WDA_EXCLUDEFROMCAPTURE, WINDOW_STYLE, WM_APP, WM_CLOSE, WM_COMMAND, WM_CONTEXTMENU,
-                WM_DESTROY, WM_HOTKEY, WM_KEYDOWN, WM_LBUTTONDOWN, WM_LBUTTONUP, WM_MOUSEMOVE,
-                WM_PAINT, WM_RBUTTONUP, WM_TIMER, WNDCLASSW, WS_BORDER, WS_CAPTION, WS_CHILD,
-                WS_EX_DLGMODALFRAME, WS_EX_LAYERED, WS_EX_TOOLWINDOW, WS_EX_TOPMOST, WS_POPUP,
-                WS_SYSMENU, WS_VISIBLE,
+                IDCANCEL, IDNO, IDOK, IDYES, IsWindow, KillTimer, LWA_ALPHA, LoadCursorW,
+                LoadIconW, MB_ICONERROR, MB_OK, MB_OKCANCEL, MB_YESNO, MB_YESNOCANCEL, MF_STRING,
+                MSG, MessageBoxW, PostMessageW, RegisterClassW, SM_CXVIRTUALSCREEN,
+                SM_CYVIRTUALSCREEN, SM_XVIRTUALSCREEN, SM_YVIRTUALSCREEN, SW_SHOW,
+                SetForegroundWindow, SetLayeredWindowAttributes, SetTimer,
+                SetWindowDisplayAffinity, SetWindowLongPtrW, SetWindowTextW, ShowWindow,
+                TrackPopupMenu, TranslateMessage, WDA_EXCLUDEFROMCAPTURE, WINDOW_STYLE, WM_APP,
+                WM_CLOSE, WM_COMMAND, WM_CONTEXTMENU, WM_DESTROY, WM_HOTKEY, WM_KEYDOWN,
+                WM_LBUTTONDOWN, WM_LBUTTONUP, WM_MOUSEMOVE, WM_PAINT, WM_RBUTTONUP, WM_TIMER,
+                WNDCLASSW, WS_BORDER, WS_CAPTION, WS_CHILD, WS_EX_DLGMODALFRAME, WS_EX_LAYERED,
+                WS_EX_TOOLWINDOW, WS_EX_TOPMOST, WS_POPUP, WS_SYSMENU, WS_VISIBLE,
             },
         },
     },
@@ -149,6 +149,9 @@ struct ReviewWindowState {
     started: std::time::Instant,
     last_at: std::time::Duration,
     displayed_second: u64,
+    last_tick_us: u64,
+    slow_tick: bool,
+    error: Option<String>,
     accepted: bool,
 }
 
@@ -425,6 +428,9 @@ fn show_review(recording: &mut Recording) -> Result<bool, Box<dyn Error>> {
         started: std::time::Instant::now(),
         last_at: std::time::Duration::ZERO,
         displayed_second: u64::MAX,
+        last_tick_us: 0,
+        slow_tick: false,
+        error: None,
         accepted: false,
     });
     let pointer = Box::into_raw(state);
@@ -524,6 +530,7 @@ fn region_fits_any_monitor(
 }
 
 fn advance_review(state: &mut ReviewWindowState) -> Result<bool, Box<dyn Error>> {
+    let work_started = std::time::Instant::now();
     let recording = unsafe { &mut *state.recording };
     let at = preview_timestamp(state.started.elapsed(), state.end);
     let mut changed = false;
@@ -538,6 +545,15 @@ fn advance_review(state: &mut ReviewWindowState) -> Result<bool, Box<dyn Error>>
         changed = true;
     }
     state.last_at = at;
+    state.last_tick_us = work_started.elapsed().as_micros().min(u64::MAX as u128) as u64;
+    state.slow_tick = state.last_tick_us >= 50_000;
+    if state.slow_tick {
+        // Do not immediately chase a wall-clock jump with another large batch
+        // of spill-file reads. Playback resumes from the displayed timestamp.
+        state.started = std::time::Instant::now()
+            .checked_sub(state.last_at)
+            .unwrap_or_else(std::time::Instant::now);
+    }
     Ok(changed)
 }
 
@@ -1096,7 +1112,10 @@ unsafe extern "system" fn review_proc(
             match wparam.0 & 0xffff {
                 id if id == REVIEW_SAVE_ID as usize => {
                     if !pointer.is_null() {
-                        unsafe { &mut *pointer }.accepted = true;
+                        let state = unsafe { &mut *pointer };
+                        if state.error.is_none() {
+                            state.accepted = true;
+                        }
                     }
                     let _ = unsafe { DestroyWindow(hwnd) };
                 }
@@ -1115,12 +1134,9 @@ unsafe extern "system" fn review_proc(
                 let changed = match advance_review(state) {
                     Ok(changed) => changed,
                     Err(error) => {
-                        show_text(
-                            &format!("Review playback failed: {error}"),
-                            MB_OK | MB_ICONERROR,
-                        );
-                        let _ = unsafe { DestroyWindow(hwnd) };
-                        return LRESULT(0);
+                        state.error = Some(format!("Review playback failed: {error}"));
+                        let _ = unsafe { KillTimer(Some(hwnd), UI_TIMER_ID) };
+                        true
                     }
                 };
                 let second = state.last_at.as_secs();
@@ -1181,6 +1197,45 @@ unsafe extern "system" fn review_proc(
                         DT_CENTER | DT_VCENTER | DT_SINGLELINE,
                     )
                 };
+                if let Some(error) = state.error.as_deref() {
+                    let mut error_text =
+                        format!("Error: {error}").encode_utf16().collect::<Vec<_>>();
+                    let mut error_rect = RECT {
+                        left: 24,
+                        top: 58,
+                        right: client.right - 24,
+                        bottom: 84,
+                    };
+                    let _ = unsafe { SetTextColor(dc, COLORREF(0x0000_00cc)) };
+                    let _ = unsafe {
+                        DrawTextW(
+                            dc,
+                            &mut error_text,
+                            &mut error_rect,
+                            DT_CENTER | DT_VCENTER | DT_SINGLELINE,
+                        )
+                    };
+                } else if state.slow_tick {
+                    let mut slow_text =
+                        format!("Preview loading… {} ms", state.last_tick_us / 1_000)
+                            .encode_utf16()
+                            .collect::<Vec<_>>();
+                    let mut slow_rect = RECT {
+                        left: 24,
+                        top: 58,
+                        right: client.right - 24,
+                        bottom: 84,
+                    };
+                    let _ = unsafe { SetTextColor(dc, COLORREF(0x0066_6600)) };
+                    let _ = unsafe {
+                        DrawTextW(
+                            dc,
+                            &mut slow_text,
+                            &mut slow_rect,
+                            DT_CENTER | DT_VCENTER | DT_SINGLELINE,
+                        )
+                    };
+                }
                 paint_review_canvas(dc, &state.canvas, client);
             }
             let _ = unsafe { EndPaint(hwnd, &paint) };
