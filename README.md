@@ -21,6 +21,8 @@ with `Win + Shift + G` (or the recording HUD). It uses ScreenDelta `Full` / `Del
 `Unchanged` updates, then opens Review with elapsed time and timeline-update
 count plus a content-aware estimated GIF size. Choose Save or Discard; Save then selects Fast, Balanced, or Best GIF
 quality and writes `%USERPROFILE%\\Videos\\QuickGIFlick\\QuickGIFlick_YYYY-MM-DD_HH-MM-SS.gif`.
+Encoding runs on its own worker; a native progress window remains responsive
+and shows percentage plus elapsed time while the GIF is created.
 The recording HUD shows `REC mm:ss` and is excluded from supported Windows
 capture paths on a best-effort basis.
 Before quality selection, Review provides Start and End fields in seconds,
@@ -63,6 +65,10 @@ $env:QUICKGIFFLICK_FPS = '15'
 cargo run
 Remove-Item Env:QUICKGIFFLICK_BENCH,Env:QUICKGIFFLICK_SECONDS,Env:QUICKGIFFLICK_FPS
 ```
+
+Set `QUICKGIFFLICK_AUTOSTART=1` when testing the native UI automatically. It
+opens Selection immediately and makes temporary controller windows visible to
+Windows UI automation; normal launches remain tray-first and capture-excluded.
 
 For repeatable benchmark capture rather than the UI, use
 `$env:QUICKGIFFLICK_BENCH=1` and set `QUICKGIFFLICK_SECONDS`.

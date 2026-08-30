@@ -7,7 +7,7 @@ use std::{
     error::Error,
     sync::{
         Arc, Mutex, OnceLock,
-        atomic::{AtomicBool, Ordering},
+        atomic::{AtomicBool, AtomicUsize, Ordering},
         mpsc::{self, Receiver},
     },
     thread,
@@ -20,8 +20,9 @@ use windows::{
         Foundation::{COLORREF, GlobalFree, HANDLE, HWND, LPARAM, LRESULT, POINT, RECT, WPARAM},
         Graphics::Gdi::{
             BLACK_BRUSH, BeginPaint, CombineRgn, CreateRectRgn, DT_CENTER, DT_SINGLELINE,
-            DT_VCENTER, DeleteObject, DrawTextW, EndPaint, GetStockObject, InvalidateRect,
-            PAINTSTRUCT, RGN_DIFF, Rectangle, SetWindowRgn,
+            DT_VCENTER, DeleteObject, DrawTextW, EndPaint, FillRect, GetStockObject,
+            InvalidateRect, PAINTSTRUCT, RGN_DIFF, Rectangle, SetBkMode, SetTextColor,
+            SetWindowRgn, TRANSPARENT, WHITE_BRUSH,
         },
         System::{
             DataExchange::{CloseClipboard, EmptyClipboard, OpenClipboard, SetClipboardData},
@@ -49,12 +50,12 @@ use windows::{
                 MSG, MessageBoxW, PostMessageW, RegisterClassW, SM_CXVIRTUALSCREEN,
                 SM_CYVIRTUALSCREEN, SM_XVIRTUALSCREEN, SM_YVIRTUALSCREEN, SW_SHOW,
                 SetForegroundWindow, SetLayeredWindowAttributes, SetTimer,
-                SetWindowDisplayAffinity, ShowWindow, TrackPopupMenu, TranslateMessage,
-                WDA_EXCLUDEFROMCAPTURE, WINDOW_STYLE, WM_APP, WM_CLOSE, WM_COMMAND, WM_CONTEXTMENU,
-                WM_DESTROY, WM_HOTKEY, WM_KEYDOWN, WM_LBUTTONDOWN, WM_LBUTTONUP, WM_MOUSEMOVE,
-                WM_PAINT, WM_RBUTTONUP, WM_TIMER, WNDCLASSW, WS_BORDER, WS_CAPTION, WS_CHILD,
-                WS_EX_DLGMODALFRAME, WS_EX_LAYERED, WS_EX_TOOLWINDOW, WS_EX_TOPMOST, WS_POPUP,
-                WS_SYSMENU, WS_VISIBLE,
+                SetWindowDisplayAffinity, SetWindowLongPtrW, ShowWindow, TrackPopupMenu,
+                TranslateMessage, WDA_EXCLUDEFROMCAPTURE, WINDOW_STYLE, WM_APP, WM_CLOSE,
+                WM_COMMAND, WM_CONTEXTMENU, WM_DESTROY, WM_HOTKEY, WM_KEYDOWN, WM_LBUTTONDOWN,
+                WM_LBUTTONUP, WM_MOUSEMOVE, WM_PAINT, WM_RBUTTONUP, WM_TIMER, WNDCLASSW, WS_BORDER,
+                WS_CAPTION, WS_CHILD, WS_EX_DLGMODALFRAME, WS_EX_LAYERED, WS_EX_TOOLWINDOW,
+                WS_EX_TOPMOST, WS_POPUP, WS_SYSMENU, WS_VISIBLE,
             },
         },
     },
@@ -65,6 +66,7 @@ const HOTKEY_ID: i32 = 0x5147;
 const RECORDING_TIMER_ID: usize = 0x5147;
 const OVERLAY_CLASS: PCWSTR = w!("QuickGIFlickSelectionOverlay");
 const HUD_CLASS: PCWSTR = w!("QuickGIFlickRecordingHud");
+const ENCODING_CLASS: PCWSTR = w!("QuickGIFlickEncodingProgress");
 const TRIM_CLASS: PCWSTR = w!("QuickGIFlickTrimDialog");
 const TRAY_CLASS: PCWSTR = w!("QuickGIFlickTrayHost");
 const TRAY_CALLBACK: u32 = WM_APP + 1;
@@ -88,8 +90,6 @@ const TRIM_SAVE_ID: i32 = 1003;
 const TRIM_FULL_ID: i32 = 1004;
 const TRIM_CANCEL_ID: i32 = 1005;
 static SELECTION: OnceLock<Mutex<Option<Region>>> = OnceLock::new();
-static HUD_STOP: OnceLock<Mutex<Option<Arc<AtomicBool>>>> = OnceLock::new();
-static HUD_STARTED: OnceLock<Mutex<Option<std::time::Instant>>> = OnceLock::new();
 static TRIM_DIALOG: OnceLock<Mutex<TrimDialogState>> = OnceLock::new();
 
 struct OverlayState {
@@ -103,6 +103,29 @@ struct ActiveRecording {
     stop: Arc<AtomicBool>,
     completed: Receiver<Result<Recording, String>>,
     hud: HWND,
+}
+
+struct HudState {
+    stop: Arc<AtomicBool>,
+    started: std::time::Instant,
+}
+
+#[derive(Default)]
+struct EncodeProgress {
+    completed: AtomicUsize,
+    total: AtomicUsize,
+}
+
+struct ActiveEncoding {
+    completed: Receiver<Result<std::path::PathBuf, String>>,
+    progress: Arc<EncodeProgress>,
+    window: HWND,
+}
+
+enum AppState {
+    Ready,
+    Recording(ActiveRecording),
+    Encoding(ActiveEncoding),
 }
 
 struct TrimDialogState {
@@ -131,31 +154,44 @@ pub(crate) fn run() -> Result<(), Box<dyn Error>> {
 }
 
 fn message_loop() -> Result<(), Box<dyn Error>> {
-    let mut active = None;
+    let mut state = AppState::Ready;
     let tray = show_tray()?;
     unsafe {
+        let _ = SetTimer(None, RECORDING_TIMER_ID, 100, None);
+        if std::env::var_os("QUICKGIFFLICK_AUTOSTART").is_some() {
+            let _ = PostMessageW(Some(tray), TRAY_START, WPARAM(0), LPARAM(0));
+        }
         let mut message = MSG::default();
         while GetMessageW(&mut message, None, 0, 0).into() {
             if message.message == WM_TIMER {
-                finish_recording(&mut active);
+                poll_state(&mut state);
             }
             if (message.message == WM_HOTKEY && message.wParam.0 == HOTKEY_ID as usize)
                 || message.message == TRAY_START
             {
-                if let Some(recording) = &active {
-                    recording.stop.store(true, Ordering::Relaxed);
-                } else if let Some(region) = select_region()? {
-                    let cursor = choose_cursor();
-                    let choice = MessageBoxW(
-                        None,
-                        w!(
-                            "Record this selected area now? Cancel returns to the hotkey. Recording continues until you stop it; QUICKGIFFLICK_SECONDS is only an optional development limit."
-                        ),
-                        w!("QuickGIFlick"),
-                        MB_OKCANCEL,
-                    );
-                    if choice == IDOK {
-                        active = Some(start_recording(region, cursor)?);
+                match &state {
+                    AppState::Recording(recording) => {
+                        recording.stop.store(true, Ordering::Relaxed);
+                    }
+                    AppState::Encoding(_) => show_text(
+                        "QuickGIFlick is creating the GIF. Please wait for it to finish.",
+                        MB_OK,
+                    ),
+                    AppState::Ready => {
+                        if let Some(region) = select_region()? {
+                            let cursor = choose_cursor();
+                            let choice = MessageBoxW(
+                                None,
+                                w!(
+                                    "Record this selected area now? Cancel returns to the hotkey. Recording continues until you stop it."
+                                ),
+                                w!("QuickGIFlick"),
+                                MB_OKCANCEL,
+                            );
+                            if choice == IDOK {
+                                state = AppState::Recording(start_recording(region, cursor)?);
+                            }
+                        }
                     }
                 }
             }
@@ -171,6 +207,7 @@ fn message_loop() -> Result<(), Box<dyn Error>> {
             let _ = TranslateMessage(&message);
             DispatchMessageW(&message);
         }
+        let _ = KillTimer(None, RECORDING_TIMER_ID);
         remove_tray(tray);
     }
     Ok(())
@@ -181,16 +218,9 @@ fn start_recording(
     cursor: CursorCapture,
 ) -> Result<ActiveRecording, Box<dyn Error>> {
     let stop = Arc::new(AtomicBool::new(false));
-    *HUD_STARTED
-        .get_or_init(|| Mutex::new(None))
-        .lock()
-        .expect("HUD start lock") = Some(std::time::Instant::now());
-    *HUD_STOP
-        .get_or_init(|| Mutex::new(None))
-        .lock()
-        .expect("HUD stop lock") = Some(stop.clone());
     let (sender, completed) = mpsc::channel();
     let worker_stop = stop.clone();
+    let hud = show_recording_hud(stop.clone())?;
     thread::spawn(move || {
         let result = crate::capture_recording_with_cursor(
             CaptureSource::Region(region),
@@ -200,10 +230,6 @@ fn start_recording(
         .map_err(|error| error.to_string());
         let _ = sender.send(result);
     });
-    let hud = show_recording_hud()?;
-    unsafe {
-        let _ = SetTimer(None, RECORDING_TIMER_ID, 100, None);
-    }
     Ok(ActiveRecording {
         stop,
         completed,
@@ -222,69 +248,112 @@ fn choose_cursor() -> CursorCapture {
     }
 }
 
-fn finish_recording(active: &mut Option<ActiveRecording>) {
-    let Some(recording) = active.as_ref() else {
-        return;
-    };
-    unsafe {
-        let _ = InvalidateRect(Some(recording.hud), None, false);
-    }
-    let Ok(result) = recording.completed.try_recv() else {
-        return;
-    };
-    unsafe {
-        let _ = DestroyWindow(recording.hud);
-        let _ = KillTimer(None, RECORDING_TIMER_ID);
-    }
-    *HUD_STOP
-        .get_or_init(|| Mutex::new(None))
-        .lock()
-        .expect("HUD stop lock") = None;
-    *HUD_STARTED
-        .get_or_init(|| Mutex::new(None))
-        .lock()
-        .expect("HUD start lock") = None;
-    *active = None;
-    match result {
-        Ok(mut recording) => review_recording(&mut recording),
-        Err(error) => show_text(&format!("Recording failed: {error}"), MB_OK | MB_ICONERROR),
+fn poll_state(state: &mut AppState) {
+    match state {
+        AppState::Ready => {}
+        AppState::Recording(recording) => {
+            unsafe {
+                let _ = InvalidateRect(Some(recording.hud), None, false);
+            }
+            let Ok(result) = recording.completed.try_recv() else {
+                return;
+            };
+            let AppState::Recording(recording) = std::mem::replace(state, AppState::Ready) else {
+                unreachable!();
+            };
+            unsafe {
+                let _ = DestroyWindow(recording.hud);
+            }
+            match result {
+                Ok(recording) => {
+                    if let Some(encoding) = review_recording(recording) {
+                        *state = AppState::Encoding(encoding);
+                    }
+                }
+                Err(error) => {
+                    show_text(&format!("Recording failed: {error}"), MB_OK | MB_ICONERROR)
+                }
+            }
+        }
+        AppState::Encoding(encoding) => {
+            update_encoding_window(encoding);
+            let Ok(result) = encoding.completed.try_recv() else {
+                return;
+            };
+            let AppState::Encoding(encoding) = std::mem::replace(state, AppState::Ready) else {
+                unreachable!();
+            };
+            unsafe {
+                let _ = DestroyWindow(encoding.window);
+            }
+            match result {
+                Ok(path) => offer_copy(&path),
+                Err(error) => show_text(
+                    &format!("GIF encoding failed: {error}"),
+                    MB_OK | MB_ICONERROR,
+                ),
+            }
+        }
     }
 }
 
-fn review_recording(recording: &mut Recording) {
+fn review_recording(mut recording: Recording) -> Option<ActiveEncoding> {
     let message = format!(
-        "Review: {:.2}s, {} timeline updates.\nEstimated GIF size: ~{} KiB\n\nSave a balanced GIF now?",
+        "Review: {:.2}s, {} timeline updates.\nEstimated GIF size: ~{} KiB\n\nContinue to trim and quality settings?",
         recording.end().as_secs_f64(),
         recording.update_len(),
         recording.estimated_gif_bytes() / 1024,
     );
     if show_question(&message) != IDYES {
-        return;
+        return None;
     }
-    let Some((start, end)) = choose_trim_range(recording.end()) else {
-        return;
-    };
+    let (start, end) = choose_trim_range(recording.end())?;
     let quality = choose_quality();
     let output = match crate::output_path() {
         Ok(path) => path,
         Err(error) => {
-            return show_text(&format!("Save path failed: {error}"), MB_OK | MB_ICONERROR);
+            show_text(&format!("Save path failed: {error}"), MB_OK | MB_ICONERROR);
+            return None;
         }
     };
-    match crate::encode_recording_range(
-        recording,
-        &output,
-        crate::GifMode::Full,
-        quality,
-        start,
-        end,
-    ) {
-        Ok(_) => offer_copy(&output),
-        Err(error) => show_text(
-            &format!("GIF encoding failed: {error}"),
-            MB_OK | MB_ICONERROR,
-        ),
-    }
+    let window = match show_encoding_window() {
+        Ok(window) => window,
+        Err(error) => {
+            show_text(
+                &format!("Progress window failed: {error}"),
+                MB_OK | MB_ICONERROR,
+            );
+            return None;
+        }
+    };
+    let progress = Arc::new(EncodeProgress::default());
+    let worker_progress = progress.clone();
+    let (sender, completed) = mpsc::channel();
+    thread::spawn(move || {
+        let result = crate::encode_recording_range_with_progress(
+            &mut recording,
+            &output,
+            crate::GifMode::Full,
+            quality,
+            start,
+            end,
+            |done, total| {
+                worker_progress.completed.store(done, Ordering::Relaxed);
+                worker_progress.total.store(total, Ordering::Relaxed);
+            },
+        )
+        .map(|_| output.clone())
+        .map_err(|error| {
+            let _ = std::fs::remove_file(&output);
+            error.to_string()
+        });
+        let _ = sender.send(result);
+    });
+    Some(ActiveEncoding {
+        completed,
+        progress,
+        window,
+    })
 }
 
 fn choose_trim_range(
@@ -308,7 +377,7 @@ fn choose_trim_range(
             hInstance: instance.into(),
             lpszClassName: TRIM_CLASS,
             lpfnWndProc: Some(trim_proc),
-            hbrBackground: windows::Win32::Graphics::Gdi::HBRUSH(GetStockObject(BLACK_BRUSH).0),
+            hbrBackground: windows::Win32::Graphics::Gdi::HBRUSH(GetStockObject(WHITE_BRUSH).0),
             ..Default::default()
         };
         RegisterClassW(&class);
@@ -320,7 +389,7 @@ fn choose_trim_range(
             360,
             220,
             360,
-            205,
+            235,
             None,
             None,
             Some(instance.into()),
@@ -393,7 +462,7 @@ fn choose_trim_range(
             18,
             94,
             320,
-            25,
+            40,
             Some(hwnd),
             None,
             Some(instance.into()),
@@ -410,7 +479,7 @@ fn choose_trim_range(
                 label,
                 WS_CHILD | WS_VISIBLE | WINDOW_STYLE(BS_PUSHBUTTON as u32),
                 x,
-                140,
+                155,
                 width,
                 30,
                 Some(hwnd),
@@ -595,7 +664,7 @@ unsafe extern "system" fn tray_proc(
     }
 }
 
-fn show_recording_hud() -> Result<HWND, Box<dyn Error>> {
+fn show_recording_hud(stop: Arc<AtomicBool>) -> Result<HWND, Box<dyn Error>> {
     unsafe {
         let instance = GetModuleHandleW(None)?;
         let class = WNDCLASSW {
@@ -607,8 +676,14 @@ fn show_recording_hud() -> Result<HWND, Box<dyn Error>> {
             ..Default::default()
         };
         RegisterClassW(&class);
+        let automated = std::env::var_os("QUICKGIFFLICK_AUTOSTART").is_some();
+        let tool_window = if automated {
+            Default::default()
+        } else {
+            WS_EX_TOOLWINDOW
+        };
         let hwnd = CreateWindowExW(
-            WS_EX_TOPMOST | WS_EX_TOOLWINDOW | WS_EX_LAYERED,
+            WS_EX_TOPMOST | tool_window | WS_EX_LAYERED,
             HUD_CLASS,
             w!("QuickGIFlick recording"),
             WS_POPUP,
@@ -621,12 +696,81 @@ fn show_recording_hud() -> Result<HWND, Box<dyn Error>> {
             Some(instance.into()),
             None,
         )?;
+        let state = Box::new(HudState {
+            stop,
+            started: std::time::Instant::now(),
+        });
+        let _ = SetWindowLongPtrW(hwnd, GWLP_USERDATA, Box::into_raw(state) as isize);
         let _ = SetLayeredWindowAttributes(hwnd, COLORREF(0), 220, LWA_ALPHA);
         // Best effort: Windows 10 version 2004+ excludes this top-level HUD
         // from supported capture paths; failure leaves recording functional.
-        let _ = SetWindowDisplayAffinity(hwnd, WDA_EXCLUDEFROMCAPTURE);
+        if !automated {
+            let _ = SetWindowDisplayAffinity(hwnd, WDA_EXCLUDEFROMCAPTURE);
+        }
         let _ = ShowWindow(hwnd, SW_SHOW);
         Ok(hwnd)
+    }
+}
+
+fn show_encoding_window() -> Result<HWND, Box<dyn Error>> {
+    unsafe {
+        let instance = GetModuleHandleW(None)?;
+        let class = WNDCLASSW {
+            hIcon: bundled_icon(instance.into()),
+            hInstance: instance.into(),
+            lpszClassName: ENCODING_CLASS,
+            lpfnWndProc: Some(encoding_proc),
+            hbrBackground: windows::Win32::Graphics::Gdi::HBRUSH(GetStockObject(WHITE_BRUSH).0),
+            ..Default::default()
+        };
+        RegisterClassW(&class);
+        let tool_window = if std::env::var_os("QUICKGIFFLICK_AUTOSTART").is_some() {
+            Default::default()
+        } else {
+            WS_EX_TOOLWINDOW
+        };
+        let hwnd = CreateWindowExW(
+            WS_EX_TOPMOST | tool_window,
+            ENCODING_CLASS,
+            w!("QuickGIFlick — Creating GIF"),
+            WS_POPUP | WS_CAPTION,
+            360,
+            260,
+            440,
+            150,
+            None,
+            None,
+            Some(instance.into()),
+            None,
+        )?;
+        let state = Box::new(EncodingWindowState {
+            started: std::time::Instant::now(),
+            completed: 0,
+            total: 0,
+        });
+        let _ = SetWindowLongPtrW(hwnd, GWLP_USERDATA, Box::into_raw(state) as isize);
+        let _ = ShowWindow(hwnd, SW_SHOW);
+        Ok(hwnd)
+    }
+}
+
+struct EncodingWindowState {
+    started: std::time::Instant,
+    completed: usize,
+    total: usize,
+}
+
+fn update_encoding_window(encoding: &ActiveEncoding) {
+    let pointer =
+        unsafe { GetWindowLongPtrW(encoding.window, GWLP_USERDATA) as *mut EncodingWindowState };
+    if pointer.is_null() {
+        return;
+    }
+    let state = unsafe { &mut *pointer };
+    state.completed = encoding.progress.completed.load(Ordering::Relaxed);
+    state.total = encoding.progress.total.load(Ordering::Relaxed);
+    unsafe {
+        let _ = InvalidateRect(Some(encoding.window), None, false);
     }
 }
 
@@ -657,8 +801,13 @@ fn select_region() -> Result<Option<Region>, Box<dyn Error>> {
             current: POINT::default(),
             aspect: None,
         });
+        let tool_window = if std::env::var_os("QUICKGIFFLICK_AUTOSTART").is_some() {
+            Default::default()
+        } else {
+            WS_EX_TOOLWINDOW
+        };
         let hwnd = CreateWindowExW(
-            WS_EX_TOPMOST | WS_EX_TOOLWINDOW | WS_EX_LAYERED,
+            WS_EX_TOPMOST | tool_window | WS_EX_LAYERED,
             OVERLAY_CLASS,
             w!("QuickGIFlick selection"),
             WS_POPUP,
@@ -671,7 +820,6 @@ fn select_region() -> Result<Option<Region>, Box<dyn Error>> {
             Some(instance.into()),
             None,
         )?;
-        use windows::Win32::UI::WindowsAndMessaging::{GWLP_USERDATA, SetWindowLongPtrW};
         let _ = SetWindowLongPtrW(hwnd, GWLP_USERDATA, Box::into_raw(state) as isize);
         // Global alpha provides an unobtrusive dimmer while retaining normal
         // desktop visibility during selection.
@@ -870,13 +1018,9 @@ unsafe extern "system" fn hud_proc(
 ) -> LRESULT {
     match message {
         WM_LBUTTONDOWN => {
-            if let Some(stop) = HUD_STOP
-                .get_or_init(|| Mutex::new(None))
-                .lock()
-                .expect("HUD stop lock")
-                .as_ref()
-            {
-                stop.store(true, Ordering::Relaxed);
+            let pointer = unsafe { GetWindowLongPtrW(hwnd, GWLP_USERDATA) as *mut HudState };
+            if !pointer.is_null() {
+                unsafe { &*pointer }.stop.store(true, Ordering::Relaxed);
             }
             LRESULT(0)
         }
@@ -885,12 +1029,14 @@ unsafe extern "system" fn hud_proc(
             let dc = unsafe { BeginPaint(hwnd, &mut paint) };
             let mut rect = RECT::default();
             let _ = unsafe { GetClientRect(hwnd, &mut rect) };
-            let elapsed = HUD_STARTED
-                .get_or_init(|| Mutex::new(None))
-                .lock()
-                .expect("HUD start lock")
-                .map(|started| started.elapsed())
-                .unwrap_or_default();
+            let _ = unsafe { SetBkMode(dc, TRANSPARENT) };
+            let _ = unsafe { SetTextColor(dc, COLORREF(0x00ff_ffff)) };
+            let pointer = unsafe { GetWindowLongPtrW(hwnd, GWLP_USERDATA) as *mut HudState };
+            let elapsed = if pointer.is_null() {
+                std::time::Duration::default()
+            } else {
+                unsafe { &*pointer }.started.elapsed()
+            };
             let mut text: Vec<u16> = format!(
                 "● REC {}  Click or Win+Shift+G to stop",
                 recording_clock_text(elapsed)
@@ -906,6 +1052,93 @@ unsafe extern "system" fn hud_proc(
                 )
             };
             let _ = unsafe { EndPaint(hwnd, &paint) };
+            LRESULT(0)
+        }
+        WM_DESTROY => {
+            let pointer = unsafe { GetWindowLongPtrW(hwnd, GWLP_USERDATA) as *mut HudState };
+            if !pointer.is_null() {
+                let _ = unsafe { SetWindowLongPtrW(hwnd, GWLP_USERDATA, 0) };
+                unsafe { drop(Box::from_raw(pointer)) };
+            }
+            LRESULT(0)
+        }
+        _ => unsafe { DefWindowProcW(hwnd, message, wparam, lparam) },
+    }
+}
+
+unsafe extern "system" fn encoding_proc(
+    hwnd: HWND,
+    message: u32,
+    wparam: WPARAM,
+    lparam: LPARAM,
+) -> LRESULT {
+    match message {
+        WM_PAINT => {
+            let mut paint = PAINTSTRUCT::default();
+            let dc = unsafe { BeginPaint(hwnd, &mut paint) };
+            let pointer =
+                unsafe { GetWindowLongPtrW(hwnd, GWLP_USERDATA) as *mut EncodingWindowState };
+            if !pointer.is_null() {
+                let state = unsafe { &*pointer };
+                let percent = state
+                    .completed
+                    .saturating_mul(100)
+                    .checked_div(state.total)
+                    .unwrap_or_default();
+                let mut text_rect = RECT {
+                    left: 24,
+                    top: 16,
+                    right: 416,
+                    bottom: 58,
+                };
+                let mut text: Vec<u16> = format!(
+                    "Creating GIF… {percent}%   Elapsed {}",
+                    recording_clock_text(state.started.elapsed())
+                )
+                .encode_utf16()
+                .collect();
+                let _ = unsafe { SetBkMode(dc, TRANSPARENT) };
+                let _ = unsafe { SetTextColor(dc, COLORREF(0)) };
+                let _ = unsafe {
+                    DrawTextW(
+                        dc,
+                        &mut text,
+                        &mut text_rect,
+                        DT_CENTER | DT_VCENTER | DT_SINGLELINE,
+                    )
+                };
+                let bar = RECT {
+                    left: 28,
+                    top: 72,
+                    right: 412,
+                    bottom: 94,
+                };
+                let _ = unsafe { Rectangle(dc, bar.left, bar.top, bar.right, bar.bottom) };
+                let fill = RECT {
+                    left: bar.left + 2,
+                    top: bar.top + 2,
+                    right: bar.left + 2 + (bar.right - bar.left - 4) * percent as i32 / 100,
+                    bottom: bar.bottom - 2,
+                };
+                let _ = unsafe {
+                    FillRect(
+                        dc,
+                        &fill,
+                        windows::Win32::Graphics::Gdi::HBRUSH(GetStockObject(BLACK_BRUSH).0),
+                    )
+                };
+            }
+            let _ = unsafe { EndPaint(hwnd, &paint) };
+            LRESULT(0)
+        }
+        WM_CLOSE => LRESULT(0),
+        WM_DESTROY => {
+            let pointer =
+                unsafe { GetWindowLongPtrW(hwnd, GWLP_USERDATA) as *mut EncodingWindowState };
+            if !pointer.is_null() {
+                let _ = unsafe { SetWindowLongPtrW(hwnd, GWLP_USERDATA, 0) };
+                unsafe { drop(Box::from_raw(pointer)) };
+            }
             LRESULT(0)
         }
         _ => unsafe { DefWindowProcW(hwnd, message, wparam, lparam) },

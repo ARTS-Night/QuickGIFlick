@@ -201,9 +201,30 @@ pub(crate) fn encode_recording_range(
     start: Duration,
     end: Duration,
 ) -> Result<EncodeStats, Box<dyn std::error::Error>> {
+    encode_recording_range_with_progress(recording, output, mode, quality, start, end, |_, _| {})
+}
+
+pub(crate) fn encode_recording_range_with_progress(
+    recording: &mut Recording,
+    output: &PathBuf,
+    mode: GifMode,
+    quality: GifQuality,
+    start: Duration,
+    end: Duration,
+    mut progress: impl FnMut(usize, usize),
+) -> Result<EncodeStats, Box<dyn std::error::Error>> {
     if start >= end || end > recording.end() {
         return Err("GIF range must satisfy 0 <= start < end <= recording end".into());
     }
+    let total = (0..recording.update_len())
+        .filter(|&index| {
+            let at = recording.update_time(index);
+            at > start && at <= end
+        })
+        .count()
+        + 1;
+    let mut completed = 0;
+    progress(completed, total);
     let mut stats = EncodeStats::default();
     let reconstruction_started = Instant::now();
     let mut canvas = recording.canvas_at(start)?;
@@ -241,6 +262,8 @@ pub(crate) fn encode_recording_range(
             &mut stats,
             quality,
         )?;
+        completed += 1;
+        progress(completed, total);
         let reconstruction_started = Instant::now();
         recording.apply_update(index, &mut canvas)?;
         stats.reconstruction += reconstruction_started.elapsed();
@@ -259,6 +282,7 @@ pub(crate) fn encode_recording_range(
         &mut stats,
         quality,
     )?;
+    progress(total, total);
     let finalize_started = Instant::now();
     drop(encoder);
     file.sync_all()?;
@@ -535,6 +559,29 @@ mod tests {
         }
         assert_eq!(&canvas[0..3], &[0, 0, 0]);
         assert_eq!(&canvas[12..15], &[255, 0, 0]);
+        std::fs::remove_file(path).unwrap();
+    }
+
+    #[test]
+    fn encoding_progress_reaches_total() {
+        let mut recording = Recording::new(frame(1, 1, [0, 0, 0, 255]), 1024).unwrap();
+        recording.finish(Duration::from_millis(20));
+        let path = std::env::temp_dir().join(format!(
+            "QuickGIFlick_progress_test_{}.gif",
+            std::process::id()
+        ));
+        let mut last = (0, 0);
+        encode_recording_range_with_progress(
+            &mut recording,
+            &path,
+            GifMode::Full,
+            GifQuality::Fast,
+            Duration::ZERO,
+            Duration::from_millis(20),
+            |done, total| last = (done, total),
+        )
+        .unwrap();
+        assert_eq!(last, (1, 1));
         std::fs::remove_file(path).unwrap();
     }
 
