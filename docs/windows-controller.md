@@ -16,6 +16,12 @@ it does not build a full-frame preview cache. The retained
 timeline is the foundation for trim and quality controls without blocking
 capture on GIF encoding.
 
+Review measures each playback update. Slow spill-file reads are shown as
+`Preview loading… N ms` and playback resumes from the displayed timestamp
+instead of immediately chasing a large wall-clock jump. A decode or timeline
+error remains visible inside Review and disables Continue to trim; Discard is
+still available so the user can recover without accepting a damaged timeline.
+
 After Save, a compact native quality choice selects Fast, Balanced, or Best
 quantization. It changes only GIF encoding work; capture and the Delta timeline
 are unchanged.
