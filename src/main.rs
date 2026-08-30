@@ -119,10 +119,11 @@ pub(crate) fn capture_recording_with_cursor(
     }
     recording.finish(recording_started.elapsed());
     eprintln!(
-        "recording updates={} resident_payload_bytes={} spilled_payload_bytes={} store_write_ms={:.3} capture_stats={:?}",
+        "recording updates={} resident_payload_bytes={} spilled_payload_bytes={} spill_file_bytes={} store_write_ms={:.3} capture_stats={:?}",
         recording.update_len(),
         recording.resident_payload_bytes(),
         recording.spilled_payload_bytes(),
+        recording.spill_file_bytes(),
         recording.store_time().as_secs_f64() * 1_000.0,
         capture.stats(),
     );

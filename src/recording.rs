@@ -13,7 +13,11 @@ static NEXT_SPILL_ID: AtomicU64 = AtomicU64::new(0);
 #[derive(Clone)]
 enum Payload {
     Memory(Vec<u8>),
-    Spill { offset: u64, len: usize },
+    Spill {
+        offset: u64,
+        stored_len: usize,
+        raw_len: usize,
+    },
 }
 
 #[derive(Clone)]
@@ -48,6 +52,7 @@ pub struct Recording {
     memory_budget: usize,
     resident_payload_bytes: usize,
     spilled_payload_bytes: usize,
+    spill_file_bytes: usize,
     store_time: Duration,
     spill_file: Option<File>,
     spill_path: Option<PathBuf>,
@@ -68,6 +73,7 @@ impl Recording {
             memory_budget,
             resident_payload_bytes: 0,
             spilled_payload_bytes: 0,
+            spill_file_bytes: 0,
             store_time: Duration::ZERO,
             spill_file: None,
             spill_path: None,
@@ -182,6 +188,10 @@ impl Recording {
         self.spilled_payload_bytes
     }
 
+    pub fn spill_file_bytes(&self) -> usize {
+        self.spill_file_bytes
+    }
+
     /// A cheap, content-aware GIF size estimate for Review.  It weighs the
     /// initial canvas and the actual Full/Delta payload areas, rather than
     /// treating every timestamp as a complete frame.
@@ -221,11 +231,25 @@ impl Recording {
             self.resident_payload_bytes += len;
             Payload::Memory(data)
         } else {
+            let compressed = zstd::bulk::compress(&data, 1).map_err(|error| {
+                std::io::Error::other(format!("spill compression failed: {error}"))
+            })?;
+            let compressed_len = compressed.len();
+            let (stored, stored_len) = if compressed_len < data.len() {
+                (compressed, compressed_len)
+            } else {
+                (data, len)
+            };
             let file = self.spill_file()?;
             let offset = file.seek(SeekFrom::End(0))?;
-            file.write_all(&data)?;
+            file.write_all(&stored)?;
             self.spilled_payload_bytes += len;
-            Payload::Spill { offset, len }
+            self.spill_file_bytes += stored_len;
+            Payload::Spill {
+                offset,
+                stored_len,
+                raw_len: len,
+            }
         };
         self.store_time += started.elapsed();
         Ok(StoredFrame {
@@ -240,15 +264,25 @@ impl Recording {
     fn load_frame(&mut self, frame: &StoredFrame) -> std::io::Result<CpuFrame> {
         let data = match &frame.payload {
             Payload::Memory(data) => data.clone(),
-            Payload::Spill { offset, len } => {
+            Payload::Spill {
+                offset,
+                stored_len,
+                raw_len,
+            } => {
                 let file = self
                     .spill_file
                     .as_mut()
                     .expect("spill metadata requires a spill file");
                 file.seek(SeekFrom::Start(*offset))?;
-                let mut data = vec![0; *len];
-                file.read_exact(&mut data)?;
-                data
+                let mut stored = vec![0; *stored_len];
+                file.read_exact(&mut stored)?;
+                if stored_len == raw_len {
+                    stored
+                } else {
+                    zstd::bulk::decompress(&stored, *raw_len).map_err(|error| {
+                        std::io::Error::other(format!("spill decompression failed: {error}"))
+                    })?
+                }
             }
         };
         Ok(CpuFrame {
@@ -345,6 +379,14 @@ mod tests {
         let mut canvas = crate::timeline::Canvas::new(recording.initial().unwrap());
         recording.apply_update(0, &mut canvas).unwrap();
         assert_eq!(canvas.frame.data[4], 7);
+    }
+
+    #[test]
+    fn compresses_repetitive_spill_payload_and_roundtrips() {
+        let initial = frame(256, 256, 0);
+        let mut recording = Recording::new(initial.clone(), 0).unwrap();
+        assert!(recording.spill_file_bytes() < recording.spilled_payload_bytes());
+        assert_eq!(recording.initial().unwrap().data, initial.data);
     }
 
     #[test]

@@ -101,8 +101,11 @@ created when needed, and Review displays the exact path after saving. Files use
 `QuickGIFlick_YYYY-MM-DD_HH-MM-SS.gif`; saves in the same second receive a
 `_01`, `_02`, … suffix instead of overwriting an existing GIF. Temporary
 spill files use the Windows temporary directory only when the memory budget is
-exceeded and are removed after a successful recording. The app does not upload
-recordings.
+exceeded and are removed after a successful recording. Spill chunks use fast
+lossless compression when it reduces their size; incompressible chunks stay
+raw so frames are never discarded. Debug output reports both logical
+`spilled_payload_bytes` and physical `spill_file_bytes`. The app does not
+upload recordings.
 
 ## Basic operation
 
