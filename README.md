@@ -18,8 +18,11 @@ The native Windows controller registers `Win + Shift + G`. It opens a virtual
 desktop selection overlay, accepts a selected region, and asks for explicit
 Original, Standard, or Hidden cursor choice, then Record or Cancel confirmation. Recording runs on a worker and can be stopped
 with `Win + Shift + G` (or the recording HUD). It uses ScreenDelta `Full` / `Delta` /
-`Unchanged` updates, then opens Review with elapsed time and timeline-update
-count plus a content-aware estimated GIF size. Choose Save or Discard; Save then selects Fast, Balanced, or Best GIF
+`Unchanged` updates, then opens an animated Review with elapsed time,
+timeline-update count, and a content-aware estimated GIF size. Review replays the
+Delta timeline into one reusable canvas; it does not pre-render or retain a new
+full frame for every timestamp. Choose **Continue to trim** or **Discard**;
+Continue then selects Fast, Balanced, or Best GIF
 quality and writes `%USERPROFILE%\\Videos\\QuickGIFlick\\QuickGIFlick_YYYY-MM-DD_HH-MM-SS.gif`.
 Encoding runs on its own worker; a native progress window remains responsive
 and shows percentage plus elapsed time while the GIF is created.
@@ -118,11 +121,15 @@ safe and random-access reconstruction stays bounded.
 ## Basic operation
 
 1. Press `Win + Shift + G`, or choose **Start Capture** from the tray.
-2. Drag a region; press `F`, `1`, `4`, `9`, `0`, or `V` for an aspect ratio.
+2. Drag a region contained within one monitor; press `F`, `1`, `4`, `9`, `0`,
+   or `V` for an aspect ratio. A boundary-crossing selection is rejected before
+   recording starts.
 3. Choose cursor mode and confirm **Record**.
 4. Recording continues until you stop with the HUD button or `Win + Shift + G`.
-5. In Review, optionally enter Start/End seconds, choose quality, then **Save**
-   or **Copy**. **Cancel** discards the recording.
+5. Check the looping animation in Review, then choose **Continue to trim** or
+   **Discard**.
+6. Optionally enter Start/End seconds, choose quality, then save. After encoding,
+   choose whether to copy the saved GIF file to the clipboard.
 
 Run `cargo run` from PowerShell for a debug build with console diagnostics;
 the release executable uses the Windows GUI subsystem.

@@ -13,16 +13,17 @@ use std::{
     thread,
 };
 
-use crate::recording::Recording;
-use screendelta::{CaptureSource, CursorCapture, Region};
+use crate::{recording::Recording, timeline::Canvas};
+use screendelta::{CaptureSource, CursorCapture, Region, monitors};
 use windows::{
     Win32::{
         Foundation::{COLORREF, GlobalFree, HANDLE, HWND, LPARAM, LRESULT, POINT, RECT, WPARAM},
         Graphics::Gdi::{
-            BLACK_BRUSH, BeginPaint, CombineRgn, CreateRectRgn, DT_CENTER, DT_SINGLELINE,
-            DT_VCENTER, DeleteObject, DrawTextW, EndPaint, FillRect, GetStockObject,
-            InvalidateRect, PAINTSTRUCT, RDW_ERASE, RDW_INVALIDATE, RDW_UPDATENOW, RGN_DIFF,
-            Rectangle, RedrawWindow, SetBkMode, SetTextColor, SetWindowRgn, TRANSPARENT,
+            BI_RGB, BITMAPINFO, BITMAPINFOHEADER, BLACK_BRUSH, BeginPaint, CombineRgn,
+            CreateRectRgn, DIB_RGB_COLORS, DT_CENTER, DT_SINGLELINE, DT_VCENTER, DeleteObject,
+            DrawTextW, EndPaint, FillRect, GetStockObject, HALFTONE, InvalidateRect, PAINTSTRUCT,
+            RDW_ERASE, RDW_INVALIDATE, RDW_UPDATENOW, RGN_DIFF, Rectangle, RedrawWindow, SRCCOPY,
+            SetBkMode, SetStretchBltMode, SetTextColor, SetWindowRgn, StretchDIBits, TRANSPARENT,
             WHITE_BRUSH,
         },
         System::{
@@ -68,6 +69,7 @@ const UI_TIMER_ID: usize = 0x5147;
 const OVERLAY_CLASS: PCWSTR = w!("QuickGIFlickSelectionOverlay");
 const HUD_CLASS: PCWSTR = w!("QuickGIFlickRecordingHud");
 const ENCODING_CLASS: PCWSTR = w!("QuickGIFlickEncodingProgress");
+const REVIEW_CLASS: PCWSTR = w!("QuickGIFlickReview");
 const TRIM_CLASS: PCWSTR = w!("QuickGIFlickTrimDialog");
 const TRAY_CLASS: PCWSTR = w!("QuickGIFlickTrayHost");
 const TRAY_CALLBACK: u32 = WM_APP + 1;
@@ -90,6 +92,8 @@ const TRIM_END_ID: i32 = 1002;
 const TRIM_SAVE_ID: i32 = 1003;
 const TRIM_FULL_ID: i32 = 1004;
 const TRIM_CANCEL_ID: i32 = 1005;
+const REVIEW_SAVE_ID: i32 = 1101;
+const REVIEW_DISCARD_ID: i32 = 1102;
 static SELECTION: OnceLock<Mutex<Option<Region>>> = OnceLock::new();
 static TRIM_DIALOG: OnceLock<Mutex<TrimDialogState>> = OnceLock::new();
 
@@ -133,6 +137,19 @@ enum AppState {
 struct TrimDialogState {
     recording_end: std::time::Duration,
     result: Option<Option<(std::time::Duration, std::time::Duration)>>,
+}
+
+struct ReviewWindowState {
+    recording: *mut Recording,
+    canvas: Canvas,
+    end: std::time::Duration,
+    update_count: usize,
+    estimated_kib: usize,
+    next_update: usize,
+    started: std::time::Instant,
+    last_at: std::time::Duration,
+    displayed_second: u64,
+    accepted: bool,
 }
 
 pub(crate) fn run() -> Result<(), Box<dyn Error>> {
@@ -180,6 +197,26 @@ fn message_loop() -> Result<(), Box<dyn Error>> {
                     ),
                     AppState::Ready => {
                         if let Some(region) = select_region()? {
+                            let fits_one_monitor = match monitors() {
+                                Ok(monitors) => region_fits_any_monitor(
+                                    region,
+                                    monitors.into_iter().map(|monitor| monitor.region),
+                                ),
+                                Err(error) => {
+                                    show_text(
+                                        &format!("Could not inspect active monitors: {error}"),
+                                        MB_OK | MB_ICONERROR,
+                                    );
+                                    continue;
+                                }
+                            };
+                            if !fits_one_monitor {
+                                show_text(
+                                    "The selected area crosses a monitor boundary. Select an area contained within one monitor.",
+                                    MB_OK | MB_ICONERROR,
+                                );
+                                continue;
+                            }
                             let cursor = choose_cursor();
                             let choice = MessageBoxW(
                                 None,
@@ -309,14 +346,20 @@ fn poll_state(state: &mut AppState) {
 }
 
 fn review_recording(mut recording: Recording) -> Option<ActiveEncoding> {
-    let message = format!(
-        "Review: {:.2}s, {} timeline updates.\nEstimated GIF size: ~{} KiB\n\nContinue to trim and quality settings?",
-        recording.end().as_secs_f64(),
-        recording.update_len(),
-        recording.estimated_gif_bytes() / 1024,
-    );
-    if show_question(&message) != IDYES {
+    if recording.end().is_zero() {
+        show_text("The recording is empty.", MB_OK | MB_ICONERROR);
         return None;
+    }
+    match show_review(&mut recording) {
+        Ok(true) => {}
+        Ok(false) => return None,
+        Err(error) => {
+            show_text(
+                &format!("Review preview failed: {error}"),
+                MB_OK | MB_ICONERROR,
+            );
+            return None;
+        }
     }
     let (start, end) = choose_trim_range(recording.end())?;
     let quality = choose_quality();
@@ -365,6 +408,137 @@ fn review_recording(mut recording: Recording) -> Option<ActiveEncoding> {
         progress,
         window,
     })
+}
+
+fn show_review(recording: &mut Recording) -> Result<bool, Box<dyn Error>> {
+    let end = recording.end();
+    let update_count = recording.update_len();
+    let estimated_kib = recording.estimated_gif_bytes() / 1024;
+    let canvas = Canvas::new(recording.initial()?);
+    let state = Box::new(ReviewWindowState {
+        recording,
+        canvas,
+        end,
+        update_count,
+        estimated_kib,
+        next_update: 0,
+        started: std::time::Instant::now(),
+        last_at: std::time::Duration::ZERO,
+        displayed_second: u64::MAX,
+        accepted: false,
+    });
+    let pointer = Box::into_raw(state);
+    let result = (|| -> Result<bool, Box<dyn Error>> {
+        let instance = unsafe { GetModuleHandleW(None)? };
+        let class = WNDCLASSW {
+            hIcon: bundled_icon(instance.into()),
+            hInstance: instance.into(),
+            lpszClassName: REVIEW_CLASS,
+            lpfnWndProc: Some(review_proc),
+            hbrBackground: windows::Win32::Graphics::Gdi::HBRUSH(
+                unsafe { GetStockObject(WHITE_BRUSH) }.0,
+            ),
+            ..Default::default()
+        };
+        unsafe { RegisterClassW(&class) };
+        let window = unsafe {
+            CreateWindowExW(
+                WS_EX_TOPMOST | WS_EX_DLGMODALFRAME,
+                REVIEW_CLASS,
+                w!("QuickGIFlick review"),
+                WS_POPUP | WS_CAPTION | WS_SYSMENU,
+                180,
+                90,
+                760,
+                560,
+                None,
+                None,
+                Some(instance.into()),
+                Some(pointer.cast()),
+            )?
+        };
+        unsafe { SetWindowLongPtrW(window, GWLP_USERDATA, pointer as isize) };
+        for (label, id, x) in [
+            (w!("Continue to trim"), REVIEW_SAVE_ID, 438),
+            (w!("Discard"), REVIEW_DISCARD_ID, 612),
+        ] {
+            let _ = unsafe {
+                CreateWindowExW(
+                    Default::default(),
+                    w!("BUTTON"),
+                    label,
+                    WS_CHILD | WS_VISIBLE | WINDOW_STYLE(BS_PUSHBUTTON as u32),
+                    x,
+                    475,
+                    if id == REVIEW_SAVE_ID { 154 } else { 104 },
+                    32,
+                    Some(window),
+                    Some(HMENU(id as usize as *mut _)),
+                    Some(instance.into()),
+                    None,
+                )
+            };
+        }
+        if unsafe { SetTimer(Some(window), UI_TIMER_ID, 33, None) } == 0 {
+            let _ = unsafe { DestroyWindow(window) };
+            Err::<bool, Box<dyn Error>>("could not start the Review animation timer".into())
+        } else {
+            let _ = unsafe { ShowWindow(window, SW_SHOW) };
+            let _ = unsafe { SetForegroundWindow(window) };
+            let mut message = MSG::default();
+            while unsafe { GetMessageW(&mut message, None, 0, 0) }.into() {
+                let _ = unsafe { TranslateMessage(&message) };
+                unsafe { DispatchMessageW(&message) };
+                if !unsafe { IsWindow(Some(window)) }.as_bool() {
+                    break;
+                }
+            }
+            if unsafe { IsWindow(Some(window)) }.as_bool() {
+                let _ = unsafe { DestroyWindow(window) };
+            }
+            Ok(unsafe { (*pointer).accepted })
+        }
+    })();
+    unsafe { drop(Box::from_raw(pointer)) };
+    result
+}
+
+fn preview_timestamp(
+    elapsed: std::time::Duration,
+    end: std::time::Duration,
+) -> std::time::Duration {
+    if end.is_zero() {
+        return std::time::Duration::ZERO;
+    }
+    let nanoseconds = elapsed.as_nanos() % end.as_nanos();
+    std::time::Duration::from_nanos(nanoseconds.min(u64::MAX as u128) as u64)
+}
+
+fn region_fits_any_monitor(
+    region: Region,
+    monitor_regions: impl IntoIterator<Item = Region>,
+) -> bool {
+    monitor_regions
+        .into_iter()
+        .any(|monitor| region.intersection(monitor) == Some(region))
+}
+
+fn advance_review(state: &mut ReviewWindowState) -> Result<bool, Box<dyn Error>> {
+    let recording = unsafe { &mut *state.recording };
+    let at = preview_timestamp(state.started.elapsed(), state.end);
+    let mut changed = false;
+    if at < state.last_at {
+        state.canvas.replace(recording.initial()?);
+        state.next_update = 0;
+        changed = true;
+    }
+    while state.next_update < state.update_count && recording.update_time(state.next_update) <= at {
+        recording.apply_update(state.next_update, &mut state.canvas)?;
+        state.next_update += 1;
+        changed = true;
+    }
+    state.last_at = at;
+    Ok(changed)
 }
 
 fn choose_trim_range(
@@ -909,6 +1083,189 @@ unsafe extern "system" fn trim_proc(
     }
 }
 
+unsafe extern "system" fn review_proc(
+    hwnd: HWND,
+    message: u32,
+    wparam: WPARAM,
+    lparam: LPARAM,
+) -> LRESULT {
+    match message {
+        WM_COMMAND => {
+            let pointer =
+                unsafe { GetWindowLongPtrW(hwnd, GWLP_USERDATA) as *mut ReviewWindowState };
+            match wparam.0 & 0xffff {
+                id if id == REVIEW_SAVE_ID as usize => {
+                    if !pointer.is_null() {
+                        unsafe { &mut *pointer }.accepted = true;
+                    }
+                    let _ = unsafe { DestroyWindow(hwnd) };
+                }
+                id if id == REVIEW_DISCARD_ID as usize => {
+                    let _ = unsafe { DestroyWindow(hwnd) };
+                }
+                _ => {}
+            }
+            LRESULT(0)
+        }
+        WM_TIMER => {
+            let pointer =
+                unsafe { GetWindowLongPtrW(hwnd, GWLP_USERDATA) as *mut ReviewWindowState };
+            if !pointer.is_null() {
+                let state = unsafe { &mut *pointer };
+                let changed = match advance_review(state) {
+                    Ok(changed) => changed,
+                    Err(error) => {
+                        show_text(
+                            &format!("Review playback failed: {error}"),
+                            MB_OK | MB_ICONERROR,
+                        );
+                        let _ = unsafe { DestroyWindow(hwnd) };
+                        return LRESULT(0);
+                    }
+                };
+                let second = state.last_at.as_secs();
+                let second_changed = state.displayed_second != second;
+                if second_changed {
+                    state.displayed_second = second;
+                    let title = wide(&format!(
+                        "QuickGIFlick review {} / {}",
+                        recording_clock_text(state.last_at),
+                        recording_clock_text(state.end)
+                    ));
+                    let _ = unsafe { SetWindowTextW(hwnd, PCWSTR(title.as_ptr())) };
+                }
+                if changed || second_changed {
+                    let _ = unsafe {
+                        RedrawWindow(
+                            Some(hwnd),
+                            None,
+                            None,
+                            RDW_INVALIDATE | RDW_ERASE | RDW_UPDATENOW,
+                        )
+                    };
+                }
+            }
+            LRESULT(0)
+        }
+        WM_PAINT => {
+            let mut paint = PAINTSTRUCT::default();
+            let dc = unsafe { BeginPaint(hwnd, &mut paint) };
+            let mut client = RECT::default();
+            let _ = unsafe { GetClientRect(hwnd, &mut client) };
+            let pointer =
+                unsafe { GetWindowLongPtrW(hwnd, GWLP_USERDATA) as *mut ReviewWindowState };
+            if !pointer.is_null() {
+                let state = unsafe { &*pointer };
+                let mut heading = format!(
+                    "Review  {} / {}    {} updates    Estimated ~{} KiB",
+                    recording_clock_text(state.last_at),
+                    recording_clock_text(state.end),
+                    state.update_count,
+                    state.estimated_kib,
+                )
+                .encode_utf16()
+                .collect::<Vec<_>>();
+                let mut heading_rect = RECT {
+                    left: 16,
+                    top: 10,
+                    right: client.right - 16,
+                    bottom: 52,
+                };
+                let _ = unsafe { SetBkMode(dc, TRANSPARENT) };
+                let _ = unsafe { SetTextColor(dc, COLORREF(0)) };
+                let _ = unsafe {
+                    DrawTextW(
+                        dc,
+                        &mut heading,
+                        &mut heading_rect,
+                        DT_CENTER | DT_VCENTER | DT_SINGLELINE,
+                    )
+                };
+                paint_review_canvas(dc, &state.canvas, client);
+            }
+            let _ = unsafe { EndPaint(hwnd, &paint) };
+            LRESULT(0)
+        }
+        WM_CLOSE => {
+            let _ = unsafe { DestroyWindow(hwnd) };
+            LRESULT(0)
+        }
+        WM_DESTROY => {
+            let _ = unsafe { SetWindowLongPtrW(hwnd, GWLP_USERDATA, 0) };
+            LRESULT(0)
+        }
+        _ => unsafe { DefWindowProcW(hwnd, message, wparam, lparam) },
+    }
+}
+
+fn paint_review_canvas(dc: windows::Win32::Graphics::Gdi::HDC, canvas: &Canvas, client: RECT) {
+    let preview = RECT {
+        left: 16,
+        top: 54,
+        right: client.right - 16,
+        bottom: (client.bottom - 62).max(55),
+    };
+    let _ = unsafe {
+        FillRect(
+            dc,
+            &preview,
+            windows::Win32::Graphics::Gdi::HBRUSH(GetStockObject(BLACK_BRUSH).0),
+        )
+    };
+    let frame = &canvas.frame;
+    let bitmap_width = frame.stride / 4;
+    if bitmap_width == 0 {
+        return;
+    }
+    let available_width = (preview.right - preview.left).max(1) as i64;
+    let available_height = (preview.bottom - preview.top).max(1) as i64;
+    let source_width = i64::from(frame.width);
+    let source_height = i64::from(frame.height);
+    let (width, height) = if source_width * available_height > available_width * source_height {
+        (
+            available_width,
+            available_width * source_height / source_width,
+        )
+    } else {
+        (
+            available_height * source_width / source_height,
+            available_height,
+        )
+    };
+    let x = preview.left + ((available_width - width) / 2) as i32;
+    let y = preview.top + ((available_height - height) / 2) as i32;
+    let info = BITMAPINFO {
+        bmiHeader: BITMAPINFOHEADER {
+            biSize: std::mem::size_of::<BITMAPINFOHEADER>() as u32,
+            biWidth: bitmap_width as i32,
+            biHeight: -(frame.height as i32),
+            biPlanes: 1,
+            biBitCount: 32,
+            biCompression: BI_RGB.0,
+            ..Default::default()
+        },
+        ..Default::default()
+    };
+    let _ = unsafe { SetStretchBltMode(dc, HALFTONE) };
+    let _ = unsafe {
+        StretchDIBits(
+            dc,
+            x,
+            y,
+            width as i32,
+            height as i32,
+            0,
+            0,
+            frame.width as i32,
+            frame.height as i32,
+            Some(frame.data.as_ptr().cast()),
+            &info,
+            DIB_RGB_COLORS,
+            SRCCOPY,
+        )
+    };
+}
+
 fn set_trim_dialog_result(result: Option<(std::time::Duration, std::time::Duration)>) {
     TRIM_DIALOG
         .get_or_init(|| unreachable!())
@@ -1328,5 +1685,39 @@ mod tests {
             recording_clock_text(std::time::Duration::from_secs(125)),
             "02:05"
         );
+    }
+
+    #[test]
+    fn review_playback_uses_real_time_and_loops() {
+        use std::time::Duration;
+
+        assert_eq!(
+            preview_timestamp(Duration::from_millis(700), Duration::from_secs(3)),
+            Duration::from_millis(700)
+        );
+        assert_eq!(
+            preview_timestamp(Duration::from_millis(3_200), Duration::from_secs(3)),
+            Duration::from_millis(200)
+        );
+        assert_eq!(
+            preview_timestamp(Duration::from_secs(1), Duration::ZERO),
+            Duration::ZERO
+        );
+    }
+
+    #[test]
+    fn recording_region_must_fit_one_monitor_in_desktop_coordinates() {
+        let monitors = [
+            Region::new(-1920, 0, 1920, 1080).unwrap(),
+            Region::new(0, 0, 1920, 1080).unwrap(),
+        ];
+        assert!(region_fits_any_monitor(
+            Region::new(-1800, 20, 640, 360).unwrap(),
+            monitors
+        ));
+        assert!(!region_fits_any_monitor(
+            Region::new(-100, 20, 200, 360).unwrap(),
+            monitors
+        ));
     }
 }

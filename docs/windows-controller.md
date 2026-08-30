@@ -9,8 +9,10 @@ coordinates into `CaptureSource::Region`, and starts the existing recorder
 only after an explicit confirmation.
 
 When capture stops, the worker returns the bounded Delta timeline to the UI
-instead of encoding immediately. Review shows the elapsed duration and update
-count, then offers Save or Discard. The retained
+instead of encoding immediately. Review loops an animated preview, shows the
+elapsed duration and update count, then offers Continue to trim or Discard. It
+applies timestamped updates to one reusable BGRA canvas as playback advances;
+it does not build a full-frame preview cache. The retained
 timeline is the foundation for trim and quality controls without blocking
 capture on GIF encoding.
 
@@ -42,6 +44,11 @@ reached the record confirmation. Recording completed successfully.
 
 The current release was also exercised through capture, Review, Save, and the
 Fast/Balanced/Best quality chooser; the chooser was visible and interactive.
+
+The animated Review was exercised with a 19-second recording containing 27
+timeline updates. Its accessible clock advanced from `00:07` to `00:15`, then
+wrapped to `00:06`; visible content changed with the recorded timeline and the
+Discard button closed the Review normally.
 
 The current native Trim dialog exposes Start and End (seconds), Save range,
 Full range, and Cancel. Windows MCP opened it from a three-second recording

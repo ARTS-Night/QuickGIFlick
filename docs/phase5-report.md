@@ -102,6 +102,14 @@ updates the accessible window title once per second. Windows automation
 verified both the visible text and title at `00:03`, then stopped recording and
 reached Review normally. The progress window uses the same window-owned timer.
 
+The former text-only Review prompt is now a native animated preview. Playback
+uses monotonic recording timestamps, applies only due Full/Delta updates to one
+reused canvas, and loops without building a full-frame preview cache. A
+19-second Windows recording with 27 updates advanced visibly and through its
+accessible title from `00:07` to `00:15`, then wrapped to `00:06`; Discard
+closed it normally. Static intervals repaint only when the displayed second
+changes, while visual updates repaint when their timestamp is reached.
+
 ## Remaining limits
 
 - The available host has one 96-DPI display; mixed-DPI, negative-coordinate,
